@@ -24,6 +24,9 @@
   <button id="go">Hub'a Katıl</button>
 </div>
 <canvas id="c" width="800" height="600" hidden></canvas>
+<input id="chat" placeholder="mesaj yaz — Enter ile gönder" maxlength="120" hidden
+       style="width: 780px;">
+<div id="chatlog" style="font-size: 13px; color: #8b949e; width: 780px; min-height: 4.5em;"></div>
 <div id="hud"></div>
 <script>
 "use strict";
@@ -48,7 +51,10 @@ async function join() {
   ws.onopen = () => {
     $("login").hidden = true;
     canvas.hidden = false;
-    $("hud").textContent = "bağlandı — WASD / ok tuşları";
+    $("chat").hidden = false;
+    $("hud").textContent = "bağlandı — WASD / ok tuşları · sohbet için alandaki kutu";
+    refreshChatLog();
+    setInterval(refreshChatLog, 5000);
   };
   ws.onclose = () => { $("hud").textContent = "bağlantı koptu"; };
   ws.onmessage = ev => {
@@ -68,8 +74,19 @@ async function join() {
     keys[k] = val;
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", ...keys }));
   };
-  addEventListener("keydown", e => { if (map[e.code]) { e.preventDefault(); setKey(e.code, true); } });
-  addEventListener("keyup",   e => { if (map[e.code]) { e.preventDefault(); setKey(e.code, false); } });
+  const typing = () => document.activeElement === $("chat");
+  addEventListener("keydown", e => { if (!typing() && map[e.code]) { e.preventDefault(); setKey(e.code, true); } });
+  addEventListener("keyup",   e => { if (!typing() && map[e.code]) { e.preventDefault(); setKey(e.code, false); } });
+
+  $("chat").addEventListener("keydown", e => {
+    if (e.key !== "Enter") return;
+    const text = $("chat").value.trim();
+    if (text && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "chat", text }));
+      $("chat").value = "";
+      setTimeout(refreshChatLog, 300);
+    }
+  });
   addEventListener("blur", () => { for (const k in keys) keys[k] = false;
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", ...keys })); });
 }
@@ -97,7 +114,36 @@ function draw() {
     ctx.font = "12px system-ui";
     ctx.textAlign = "center";
     ctx.fillText(p.name, p.x, p.y - 22);
+    if (p.bubble) drawBubble(p);
   }
+}
+
+function drawBubble(p) {
+  const text = p.bubble.length > 28 ? p.bubble.slice(0, 27) + "…" : p.bubble;
+  ctx.font = "12px system-ui";
+  const w = ctx.measureText(text).width + 14;
+  const x = Math.min(Math.max(p.x, w / 2 + 2), canvas.width - w / 2 - 2);
+  const y = p.y - 40;
+  ctx.beginPath();
+  ctx.roundRect(x - w / 2, y - 18, w, 22, 8);
+  ctx.fillStyle = "rgba(230,237,243,0.92)";
+  ctx.fill();
+  ctx.fillStyle = "#0d1117";
+  ctx.textAlign = "center";
+  ctx.fillText(text, x, y - 3);
+}
+
+async function refreshChatLog() {
+  try {
+    const res = await fetch("/api/chat/recent");
+    const msgs = await res.json();
+    $("chatlog").innerHTML = msgs.slice(-5).map(m =>
+      `<div><b>${escapeHTML(m.name)}:</b> ${escapeHTML(m.text)}</div>`).join("");
+  } catch {}
+}
+
+function escapeHTML(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   $("hud").textContent = `tick ${tick} · ${players.length} oyuncu çevrimiçi`;
 }
 

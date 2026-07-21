@@ -180,17 +180,23 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 }
 
 // Scan, canlı kayıtları (tombstone'suz birleşik görünüm) anahtar
-// sırasıyla fn'e verir; fn false dönerse durur. Kilidi tarama boyunca
-// tutar — uzun taramalar yazıları bekletir (MVCC gelince kalkacak).
+// sırasıyla fn'e verir; fn false dönerse durur.
 func (db *DB) Scan(fn func(key, val []byte) bool) error {
+	return db.ScanFrom(nil, fn)
+}
+
+// ScanFrom, from anahtarından (dahil) itibaren tarar. Kilidi tarama
+// boyunca tutar — uzun taramalar yazıları bekletir (MVCC gelince
+// kalkacak).
+func (db *DB) ScanFrom(from []byte, fn func(key, val []byte) bool) error {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.closed {
 		return ErrClosed
 	}
-	srcs := []iterator{db.mem.iter()}
+	srcs := []iterator{db.mem.iterFrom(from)}
 	for _, t := range db.tables {
-		srcs = append(srcs, t.iter())
+		srcs = append(srcs, t.iterFrom(from))
 	}
 	it := &dropTombIter{src: newMergeIter(srcs)}
 	for {

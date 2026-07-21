@@ -93,6 +93,16 @@ graph LR
   testte ([server_test.go](services/server/server_test.go)) hem canlı
   tarayıcıda doğrulandı.
 
+## Faz 2 — Kalıcı Hub ve Veri Modeli (devam ediyor)
+
+| Parça | Durum | Notlar |
+|---|---|---|
+| Event store | ✅ | [pkg/es](pkg/es/README.md) — pkg/storage üstünde; atomik batch, optimistic concurrency, subscribe |
+| Chat dilimi (CQRS/ES) | ✅ | komut → world aktörü → ChatSaid event → balon + [read model](services/chat/history.go) + `/api/chat/recent`; restart'ta geçmiş kalıcı |
+| Kaynak toplama + envanter | ⬜ | |
+| Trade saga | ⬜ | önce koreografi, sonra orkestrasyon |
+| CRDT global sayaçlar | ⬜ | |
+
 ## Çalıştırma
 
 ```powershell

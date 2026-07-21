@@ -25,6 +25,7 @@ import (
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/pkg/actor"
 	"shardlands/pkg/auth"
+	"shardlands/services/chat"
 	"shardlands/services/world"
 )
 
@@ -34,6 +35,7 @@ type Config struct {
 	System    *actor.System
 	World     *actor.Ref
 	Players   pb.PlayerServiceClient
+	Chat      *chat.History // sohbet read model'i (sorgu tarafı)
 }
 
 type Gateway struct {
@@ -46,9 +48,21 @@ func New(cfg Config) http.Handler {
 	g := &Gateway{cfg: cfg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", g.handleLogin)
+	mux.HandleFunc("GET /api/chat/recent", g.handleChatRecent)
 	mux.HandleFunc("GET /ws", g.handleWS)
 	mux.Handle("/", http.FileServer(http.Dir(cfg.ClientDir)))
 	return mux
+}
+
+// handleChatRecent: CQRS sorgu tarafı — event log'a değil read model'e
+// gider; world aktörüne hiç dokunmaz.
+func (g *Gateway) handleChatRecent(w http.ResponseWriter, r *http.Request) {
+	msgs := g.cfg.Chat.Recent(50)
+	if msgs == nil {
+		msgs = []chat.Message{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(msgs)
 }
 
 // ---- kimlik ----
@@ -80,13 +94,14 @@ func (g *Gateway) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // ---- WebSocket + session aktörü ----
 
-// İstemci → sunucu tek mesaj tipi (Faz 1): basılı tuş durumu.
+// İstemci → sunucu mesajları: "input" (basılı tuş durumu) ve "chat".
 type clientMsg struct {
 	Type  string `json:"type"`
 	Up    bool   `json:"up"`
 	Down  bool   `json:"down"`
 	Left  bool   `json:"left"`
 	Right bool   `json:"right"`
+	Text  string `json:"text"`
 }
 
 func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +142,7 @@ func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var m clientMsg
-			if json.Unmarshal(data, &m) == nil && m.Type == "input" {
+			if json.Unmarshal(data, &m) == nil && (m.Type == "input" || m.Type == "chat") {
 				ref.Send(m)
 			}
 		}
@@ -153,14 +168,19 @@ func (s *session) Receive(ctx *actor.Context) {
 	case world.Snapshot:
 		players := make([]map[string]any, len(m.Players))
 		for i, p := range m.Players {
-			players[i] = map[string]any{"id": p.ID, "name": p.Name, "x": p.X, "y": p.Y}
+			players[i] = map[string]any{"id": p.ID, "name": p.Name, "x": p.X, "y": p.Y, "bubble": p.Bubble}
 		}
 		s.write(ctx, map[string]any{"type": "snapshot", "tick": m.Tick, "players": players})
 	case clientMsg:
-		ctx.Send(s.world, world.Input{
-			PlayerID: s.id,
-			Up:       m.Up, Down: m.Down, Left: m.Left, Right: m.Right,
-		})
+		switch m.Type {
+		case "chat":
+			ctx.Send(s.world, world.Chat{PlayerID: s.id, Text: m.Text})
+		default: // "input"
+			ctx.Send(s.world, world.Input{
+				PlayerID: s.id,
+				Up:       m.Up, Down: m.Down, Left: m.Left, Right: m.Right,
+			})
+		}
 	}
 }
 

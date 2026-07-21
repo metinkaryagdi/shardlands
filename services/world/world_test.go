@@ -1,10 +1,14 @@
 package world_test
 
 import (
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"shardlands/pkg/actor"
+	"shardlands/pkg/es"
 	"shardlands/services/world"
 )
 
@@ -44,7 +48,7 @@ func TestMovementAndBroadcast(t *testing.T) {
 	sys := actor.NewSystem("test")
 	defer sys.Shutdown()
 
-	w, err := sys.Spawn(world.Props())
+	w, err := sys.Spawn(world.Props(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +100,7 @@ func TestLeaveRemovesPlayer(t *testing.T) {
 	sys := actor.NewSystem("test")
 	defer sys.Shutdown()
 
-	w, _ := sys.Spawn(world.Props())
+	w, _ := sys.Spawn(world.Props(nil))
 	s1, ch1 := collector(t, sys, "sess1")
 	s2, _ := collector(t, sys, "sess2")
 
@@ -111,12 +115,84 @@ func TestLeaveRemovesPlayer(t *testing.T) {
 	}
 }
 
+// Chat: geçerli komut balon üretir + event basar; balon süre dolunca
+// silinir; geçersiz komut (boş/uzun) ikisini de yapmaz.
+func TestChatBubbleAndEvent(t *testing.T) {
+	dir, err := os.MkdirTemp("", "shardlands-world-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	store, err := es.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sys := actor.NewSystem("test")
+	defer sys.Shutdown()
+	w, err := sys.Spawn(world.Props(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1, ch1 := collector(t, sys, "sess1")
+
+	w.Send(world.Join{PlayerID: "p1", Name: "ayşe", Session: s1})
+	w.Send(world.Chat{PlayerID: "p1", Text: "  selam dünya  "})
+	w.Send(world.Tick{})
+
+	snap := nextSnap(t, ch1)
+	if got := snap.Players[0].Bubble; got != "selam dünya" {
+		t.Fatalf("bubble = %q, want %q (trimmed)", got, "selam dünya")
+	}
+
+	// Event mağazaya düşmüş olmalı (aktör append'i senkron yapar).
+	evs, err := store.ReadStream(world.ChatStream, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Type != world.EventChatSaid {
+		t.Fatalf("chat events = %+v, want 1 ChatSaid", evs)
+	}
+	var said world.ChatSaid
+	if err := json.Unmarshal(evs[0].Data, &said); err != nil {
+		t.Fatal(err)
+	}
+	if said.PlayerID != "p1" || said.Name != "ayşe" || said.Text != "selam dünya" {
+		t.Fatalf("event data = %+v", said)
+	}
+
+	// Balon ~4 saniye (bubbleTicks) sonra silinmeli.
+	for i := 0; i < 4*world.TickRate; i++ {
+		w.Send(world.Tick{})
+	}
+	var last world.Snapshot
+	for i := 0; i < 4*world.TickRate; i++ {
+		last = nextSnap(t, ch1)
+	}
+	if last.Players[0].Bubble != "" {
+		t.Fatalf("bubble not expired: %q", last.Players[0].Bubble)
+	}
+
+	// Geçersiz komutlar: boş ve fazla uzun metin event üretmemeli.
+	w.Send(world.Chat{PlayerID: "p1", Text: "   "})
+	w.Send(world.Chat{PlayerID: "p1", Text: strings.Repeat("x", 121)})
+	w.Send(world.Chat{PlayerID: "yok", Text: "hayalet"})
+	w.Send(world.Tick{})
+	if snap := nextSnap(t, ch1); snap.Players[0].Bubble != "" {
+		t.Fatalf("invalid chat produced bubble: %q", snap.Players[0].Bubble)
+	}
+	if evs, _ := store.ReadStream(world.ChatStream, 0, 0); len(evs) != 1 {
+		t.Fatalf("invalid chats appended events: %d, want still 1", len(evs))
+	}
+}
+
 // Dünya sınırları: sola koşmaya devam eden oyuncu 0'da durmalı.
 func TestClampAtBounds(t *testing.T) {
 	sys := actor.NewSystem("test")
 	defer sys.Shutdown()
 
-	w, _ := sys.Spawn(world.Props())
+	w, _ := sys.Spawn(world.Props(nil))
 	s1, ch1 := collector(t, sys, "sess1")
 	w.Send(world.Join{PlayerID: "p1", Name: "a", Session: s1})
 	w.Send(world.Input{PlayerID: "p1", Left: true})

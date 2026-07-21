@@ -277,6 +277,54 @@ func TestScanMergedAndOrdered(t *testing.T) {
 	}
 }
 
+// ScanFrom: memtable + birden çok tablo + tombstone karışımında, verilen
+// anahtardan itibaren sıralı ve eksiksiz akmalı.
+func TestScanFromMidRange(t *testing.T) {
+	db := mustOpen(t, testDir(t), Options{})
+	defer db.Close()
+
+	// k00..k29 tabloda, k30..k59 ikinci tabloda, k60..k89 memtable'da.
+	for i := 0; i < 90; i++ {
+		db.Put([]byte(fmt.Sprintf("k%02d", i)), []byte(fmt.Sprintf("v%d", i)))
+		if i == 29 || i == 59 {
+			db.Flush()
+		}
+	}
+	db.Delete([]byte("k45")) // ortada bir tombstone
+
+	var got []string
+	if err := db.ScanFrom([]byte("k40"), func(k, v []byte) bool {
+		got = append(got, string(k))
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := 90 - 40 - 1 // k40'tan sona, k45 silinmiş
+	if len(got) != want {
+		t.Fatalf("scanned %d keys, want %d (got: %v...)", len(got), want, got[:min(5, len(got))])
+	}
+	if got[0] != "k40" || got[len(got)-1] != "k89" {
+		t.Fatalf("range = [%s..%s], want [k40..k89]", got[0], got[len(got)-1])
+	}
+	for _, k := range got {
+		if k == "k45" {
+			t.Fatal("tombstoned key leaked into scan")
+		}
+	}
+
+	// Sınırlar: tam bir dilim başlangıcına ve son anahtara denk gelen from.
+	got = got[:0]
+	db.ScanFrom([]byte("k89"), func(k, v []byte) bool { got = append(got, string(k)); return true })
+	if len(got) != 1 || got[0] != "k89" {
+		t.Fatalf("from=last: %v, want [k89]", got)
+	}
+	got = got[:0]
+	db.ScanFrom([]byte("z"), func(k, v []byte) bool { got = append(got, string(k)); return true })
+	if len(got) != 0 {
+		t.Fatalf("from beyond end: %v, want empty", got)
+	}
+}
+
 func TestMergeIterNewestWins(t *testing.T) {
 	newer := &sliceIter{recs: []rec{
 		{key: []byte("a"), val: []byte("new-a")},

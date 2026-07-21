@@ -258,29 +258,50 @@ func (t *sstable) get(key []byte) (rec, bool, error) {
 }
 
 type tableIter struct {
-	br        *bufio.Reader
-	path      string
-	remaining int
+	br   *bufio.Reader
+	path string
+	from []byte // nil değilse: bu anahtardan küçükleri atla
 }
 
-func (t *sstable) iter() iterator {
+func (t *sstable) iter() iterator { return t.iterFrom(nil) }
+
+// iterFrom: sparse index ile from'u içerebilecek dilime atlar, dilim
+// içinde from'dan küçük kayıtları akış sırasında atlar. Veri bölümü
+// tam indexOff'ta bittiği için akış sonu io.EOF ile belirlenir.
+func (t *sstable) iterFrom(from []byte) iterator {
+	off := int64(0)
+	if len(from) > 0 {
+		i := sort.Search(len(t.index), func(i int) bool {
+			return bytes.Compare(t.index[i].key, from) > 0
+		})
+		if i > 0 {
+			off = int64(t.index[i-1].off)
+		}
+	}
 	return &tableIter{
-		br:        bufio.NewReader(io.NewSectionReader(t.f, 0, t.indexOff)),
-		path:      t.path,
-		remaining: t.count,
+		br:   bufio.NewReader(io.NewSectionReader(t.f, off, t.indexOff-off)),
+		path: t.path,
+		from: from,
 	}
 }
 
 func (it *tableIter) next() (rec, bool, error) {
-	if it.remaining <= 0 {
-		return rec{}, false, nil
+	for {
+		r, err := decodeRec(it.br)
+		if err == io.EOF {
+			return rec{}, false, nil
+		}
+		if err != nil {
+			return rec{}, false, fmt.Errorf("%s: %w", it.path, err)
+		}
+		if it.from != nil {
+			if bytes.Compare(r.key, it.from) < 0 {
+				continue
+			}
+			it.from = nil // eşiği geçtik; artık karşılaştırma yok
+		}
+		return r, true, nil
 	}
-	r, err := decodeRec(it.br)
-	if err != nil {
-		return rec{}, false, fmt.Errorf("%s: %w", it.path, err)
-	}
-	it.remaining--
-	return r, true, nil
 }
 
 func (t *sstable) close() error { return t.f.Close() }

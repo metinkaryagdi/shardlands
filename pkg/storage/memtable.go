@@ -90,7 +90,19 @@ func (m *memtable) get(key []byte) (rec, bool) {
 // katmanı bunu kilitle garanti eder.
 type memIter struct{ node *skipNode }
 
-func (m *memtable) iter() iterator { return &memIter{node: m.head.next[0]} }
+func (m *memtable) iter() iterator { return m.iterFrom(nil) }
+
+// iterFrom, from'dan (dahil) itibaren akıtır: skip list'te ilk
+// anahtar >= from düğümüne inilir (get ile aynı yürüyüş).
+func (m *memtable) iterFrom(from []byte) iterator {
+	x := m.head
+	for lvl := skipMaxHeight - 1; lvl >= 0; lvl-- {
+		for x.next[lvl] != nil && bytes.Compare(x.next[lvl].key, from) < 0 {
+			x = x.next[lvl]
+		}
+	}
+	return &memIter{node: x.next[0]}
+}
 
 func (it *memIter) next() (rec, bool, error) {
 	if it.node == nil {

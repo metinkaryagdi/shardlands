@@ -1,3 +1,6 @@
+# Runtime data (event store)
+/data/
+
 # Binaries and build output
 *.exe
 *.test

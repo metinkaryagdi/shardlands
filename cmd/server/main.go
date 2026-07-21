@@ -16,6 +16,7 @@ import (
 func main() {
 	httpAddr := flag.String("http", ":8080", "gateway HTTP adresi")
 	clientDir := flag.String("client", "client", "istemci dosyalarının dizini")
+	dataDir := flag.String("data", "data", "event store dizini")
 	flag.Parse()
 
 	secret := []byte(os.Getenv("SHARDLANDS_SECRET"))
@@ -30,6 +31,7 @@ func main() {
 		MatchmakingAddr: "127.0.0.1:9102",
 		Secret:          secret,
 		ClientDir:       *clientDir,
+		DataDir:         *dataDir,
 	})
 	if err != nil {
 		log.Fatal(err)

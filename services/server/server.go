@@ -10,6 +10,8 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -17,6 +19,8 @@ import (
 
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/pkg/actor"
+	"shardlands/pkg/es"
+	"shardlands/services/chat"
 	"shardlands/services/gateway"
 	"shardlands/services/matchmaking"
 	"shardlands/services/player"
@@ -29,6 +33,7 @@ type Config struct {
 	MatchmakingAddr string
 	Secret          []byte
 	ClientDir       string
+	DataDir         string // event store'un yaşadığı dizin
 }
 
 type Server struct {
@@ -38,7 +43,10 @@ type Server struct {
 	grpcSrvs []*grpc.Server
 	conns    []*grpc.ClientConn
 	system   *actor.System
+	events   *es.Store
+	chatHist *chat.History
 	stopTick chan struct{}
+	stopOnce sync.Once
 }
 
 // Start, tüm bileşenleri ayağa kaldırır ve dinlemeye başlar.
@@ -67,9 +75,18 @@ func Start(cfg Config) (*Server, error) {
 	}
 	s.conns = append(s.conns, playerConn)
 
+	// Event store + read model'ler.
+	events, err := es.Open(filepath.Join(cfg.DataDir, "events"))
+	if err != nil {
+		s.Stop()
+		return nil, err
+	}
+	s.events = events
+	s.chatHist = chat.NewHistory(events)
+
 	// Dünya: aktör + dış tick zamanlayıcısı.
 	s.system = actor.NewSystem("shardlands")
-	worldRef, err := s.system.Spawn(world.Props())
+	worldRef, err := s.system.Spawn(world.Props(events))
 	if err != nil {
 		s.Stop()
 		return nil, err
@@ -100,6 +117,7 @@ func Start(cfg Config) (*Server, error) {
 		System:    s.system,
 		World:     worldRef,
 		Players:   pb.NewPlayerServiceClient(playerConn),
+		Chat:      s.chatHist,
 	})}
 	go s.httpSrv.Serve(httpLis)
 
@@ -119,8 +137,12 @@ func (s *Server) serveGRPC(addr string, register func(*grpc.Server)) (string, er
 }
 
 // Stop, bileşenleri ters sırayla kapatır: önce dış kapı (HTTP), sonra
-// dünya/aktörler, en son iç servisler.
-func (s *Server) Stop() {
+// dünya/aktörler (event üreticileri), sonra projection ve event store,
+// en son iç servisler. İdempotent: kapanış birden çok yoldan
+// tetiklenebilir (sinyal + defer + test cleanup).
+func (s *Server) Stop() { s.stopOnce.Do(s.stop) }
+
+func (s *Server) stop() {
 	if s.httpSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		s.httpSrv.Shutdown(ctx)
@@ -129,6 +151,12 @@ func (s *Server) Stop() {
 	close(s.stopTick)
 	if s.system != nil {
 		s.system.Shutdown()
+	}
+	if s.chatHist != nil {
+		s.chatHist.Close()
+	}
+	if s.events != nil {
+		s.events.Close()
 	}
 	for _, c := range s.conns {
 		c.Close()

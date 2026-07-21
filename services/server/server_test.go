@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -13,20 +14,38 @@ import (
 	"shardlands/services/world"
 )
 
-func startTestServer(t *testing.T) *Server {
+// tmpDir: Windows delete-pending esnekliği için en-iyi-çaba temizlikli
+// geçici dizin (pkg/storage testlerindeki gerekçeyle aynı).
+func tmpDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "shardlands-e2e-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+func startTestServerAt(t *testing.T, dataDir string) *Server {
 	t.Helper()
 	srv, err := Start(Config{
 		HTTPAddr:        "127.0.0.1:0",
 		PlayerAddr:      "127.0.0.1:0",
 		MatchmakingAddr: "127.0.0.1:0",
 		Secret:          []byte("e2e-secret"),
-		ClientDir:       t.TempDir(),
+		ClientDir:       tmpDir(t),
+		DataDir:         dataDir,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Stop)
 	return srv
+}
+
+func startTestServer(t *testing.T) *Server {
+	t.Helper()
+	return startTestServerAt(t, tmpDir(t))
 }
 
 func login(t *testing.T, addr, name string) (id, token string) {
@@ -63,10 +82,11 @@ type wireMsg struct {
 	ID      string `json:"id"`
 	Tick    uint64 `json:"tick"`
 	Players []struct {
-		ID   string  `json:"id"`
-		Name string  `json:"name"`
-		X    float64 `json:"x"`
-		Y    float64 `json:"y"`
+		ID     string  `json:"id"`
+		Name   string  `json:"name"`
+		X      float64 `json:"x"`
+		Y      float64 `json:"y"`
+		Bubble string  `json:"bubble"`
 	} `json:"players"`
 }
 
@@ -129,6 +149,76 @@ func TestTwoClientsSeeEachOtherMoving(t *testing.T) {
 		}
 	}
 	t.Fatal("clients never saw each other moving")
+}
+
+// Chat dilimi: mesaj → diğer istemcide balon → read model endpoint'i →
+// sunucu RESTART'ından sonra geçmiş hâlâ orada (event store kalıcılığı,
+// tüm yığının içinden).
+func TestChatBubbleHistoryAndRestart(t *testing.T) {
+	dataDir := tmpDir(t)
+	srv := startTestServerAt(t, dataDir)
+
+	id1, tok1 := login(t, srv.HTTPAddr, "ayşe")
+	_, tok2 := login(t, srv.HTTPAddr, "bora")
+	ws1 := dialWS(t, srv.HTTPAddr, tok1)
+	ws2 := dialWS(t, srv.HTTPAddr, tok2)
+	readMsg(t, ws1) // welcome
+	readMsg(t, ws2)
+
+	if err := ws1.WriteJSON(map[string]any{"type": "chat", "text": "selam dünya"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bora'nın gözünden: ayşe'nin balonu görünmeli.
+	deadline := time.Now().Add(5 * time.Second)
+	seen := false
+	for !seen && time.Now().Before(deadline) {
+		m := readMsg(t, ws2)
+		if m.Type != "snapshot" {
+			continue
+		}
+		for _, p := range m.Players {
+			if p.ID == id1 && p.Bubble == "selam dünya" {
+				seen = true
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("bubble never appeared in other client's snapshots")
+	}
+
+	// Read model: /api/chat/recent (eventual consistency — kısa bekleme).
+	waitChat := func(addr string) bool {
+		d := time.Now().Add(3 * time.Second)
+		for time.Now().Before(d) {
+			resp, err := http.Get("http://" + addr + "/api/chat/recent")
+			if err == nil {
+				var msgs []struct{ Name, Text string }
+				json.NewDecoder(resp.Body).Decode(&msgs)
+				resp.Body.Close()
+				for _, m := range msgs {
+					if m.Name == "ayşe" && m.Text == "selam dünya" {
+						return true
+					}
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return false
+	}
+	if !waitChat(srv.HTTPAddr) {
+		t.Fatal("chat message never reached read model")
+	}
+
+	// Restart: aynı DataDir ile yeni sunucu — projection event log'dan
+	// sıfırdan kurulur, geçmiş kalıcıdır.
+	ws1.Close()
+	ws2.Close()
+	srv.Stop()
+	srv2 := startTestServerAt(t, dataDir)
+	if !waitChat(srv2.HTTPAddr) {
+		t.Fatal("chat history lost after server restart")
+	}
 }
 
 // Kimliksiz/bozuk token'la WS el sıkışması reddedilmeli.
