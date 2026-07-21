@@ -25,6 +25,7 @@ import (
 	"shardlands/services/inventory"
 	"shardlands/services/matchmaking"
 	"shardlands/services/player"
+	"shardlands/services/stats"
 	"shardlands/services/trade"
 	"shardlands/services/world"
 )
@@ -48,6 +49,7 @@ type Server struct {
 	events   *es.Store
 	chatHist *chat.History
 	inv      *inventory.Inventory
+	stats    *stats.Stats
 	stopTick chan struct{}
 	stopOnce sync.Once
 }
@@ -87,6 +89,7 @@ func Start(cfg Config) (*Server, error) {
 	s.events = events
 	s.chatHist = chat.NewHistory(events)
 	s.inv = inventory.New(events)
+	s.stats = stats.New(events, "world-0") // Faz 3: shard başına ayrı nodeID
 	trades := trade.NewOrchestrator(events)
 
 	// Dünya: aktör + dış tick zamanlayıcısı.
@@ -125,6 +128,7 @@ func Start(cfg Config) (*Server, error) {
 		Chat:      s.chatHist,
 		Inventory: s.inv,
 		Trades:    trades,
+		Stats:     s.stats,
 	})}
 	go s.httpSrv.Serve(httpLis)
 
@@ -164,6 +168,9 @@ func (s *Server) stop() {
 	}
 	if s.inv != nil {
 		s.inv.Close()
+	}
+	if s.stats != nil {
+		s.stats.Close()
 	}
 	if s.events != nil {
 		s.events.Close()

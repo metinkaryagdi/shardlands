@@ -396,6 +396,57 @@ func TestTradeE2E(t *testing.T) {
 	}
 }
 
+// Global sayaçlar (CRDT + gauge): toplama /api/stats totalGathered'ı
+// artırır; çevrimiçi gauge bağlantıyla artıp kopuşla düşer.
+func TestStatsE2E(t *testing.T) {
+	srv := startTestServer(t)
+	id, tok := login(t, srv.HTTPAddr, "sayaç")
+	ws := dialWS(t, srv.HTTPAddr, tok)
+	readMsg(t, ws) // welcome
+
+	stats := func() (total float64, online float64) {
+		resp, err := http.Get("http://" + srv.HTTPAddr + "/api/stats")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var s struct {
+			TotalGathered float64 `json:"totalGathered"`
+			Online        float64 `json:"online"`
+		}
+		json.NewDecoder(resp.Body).Decode(&s)
+		return s.TotalGathered, s.Online
+	}
+
+	if _, online := stats(); online != 1 {
+		t.Fatalf("online = %v, want 1", online)
+	}
+
+	steerAndGather(t, ws, id, 400, 180) // n5 wood
+	waitInventory(t, srv.HTTPAddr, id, "wood", 1)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if total, _ := stats(); total >= 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if total, _ := stats(); total < 1 {
+		t.Fatalf("totalGathered = %v, want >= 1", total)
+	}
+
+	// Bağlantı kopunca çevrimiçi gauge düşmeli.
+	ws.Close()
+	for time.Now().Before(deadline.Add(2 * time.Second)) {
+		if _, online := stats(); online == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("online never dropped to 0 after disconnect")
+}
+
 // Kimliksiz/bozuk token'la WS el sıkışması reddedilmeli.
 func TestWSRejectsBadToken(t *testing.T) {
 	srv := startTestServer(t)

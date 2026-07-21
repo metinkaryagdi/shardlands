@@ -15,6 +15,8 @@ pkg/storage/   Faz 0: LSM-tree storage engine                          ✅
 pkg/raft/      Faz 0: Raft konsensüs                                   ✅
 pkg/clock/     Faz 0: Lamport / vector clock                           ✅
 pkg/auth/      Faz 1: minimal HS256 JWT (stdlib)                       ✅
+pkg/es/        Faz 2: event store (LSM üstünde, CQRS/ES)               ✅
+pkg/crdt/      Faz 2: G/PN-Counter CRDT                                ✅
 proto/         Faz 1: gRPC/Protobuf kontratları (buf ile codegen)      ✅
 gen/           Üretilen Go kodu (commit'li — araçsız build için)       ✅
 services/      Faz 1+: gateway, player, world, matchmaking, server     ✅
@@ -101,7 +103,47 @@ graph LR
 | Chat dilimi (CQRS/ES) | ✅ | komut → world aktörü → ChatSaid event → balon + [read model](services/chat/history.go) + `/api/chat/recent`; restart'ta geçmiş kalıcı |
 | Kaynak toplama + envanter | ✅ | respawn'lı node'lar, `ResourceGathered` → `inv-<player>` stream'i → [envanter read model](services/inventory/inventory.go) + `/api/inventory` |
 | Trade saga | ✅ | [services/trade](services/trade/README.md) — koreografi + orkestrasyon; rezervasyon, telafi, idempotentlik; `/api/trade` |
-| CRDT global sayaçlar | ⬜ | |
+| CRDT global sayaçlar | ✅ | [pkg/crdt](pkg/crdt/README.md) — G/PN-Counter, merge özellikleri testli; [services/stats](services/stats/stats.go) toplam toplanan (G-Counter) + `/api/stats` |
+
+### Faz 2 mimarisi (CQRS + Event Sourcing)
+
+```mermaid
+graph TD
+    subgraph Yazı["Yazı yolu (komut)"]
+        WS[WS komutu] --> WA[world aktörü]
+        WA -->|doğrula| EV[("event store<br/>pkg/es → LSM")]
+        TR[trade saga] --> EV
+    end
+    EV -->|es.Project<br/>checkpoint akışı| RM
+    subgraph RM["Read model'ler (sorgu — CQRS)"]
+        CH[chat History]
+        IN[inventory bakiye]
+        ST[stats G-Counter]
+    end
+    RM --> API["/api/* sorgu endpoint'leri"]
+    API --> C[istemci HUD/panel]
+```
+
+Yazı ve okuma tamamen ayrı; ikisini yalnız event log bağlar. Read
+model'ler her açılışta log'dan sıfırdan kurulur.
+
+### Faz 2 kapanış — dersler
+
+- **Türetilemeyeni persist et.** Event log tek gerçek; read model'ler,
+  es indeksi, CRDT sayaçları hep türetilebilir → persist edilmez, replay
+  ile kurulur. (LSM'deki MANIFEST tersi: dosya listesi türetilemez.)
+- **Idempotentlik, event dünyasının vergisi.** At-least-once teslim +
+  restart replay = her şey tekrar-güvenli olmalı: es batch (tek anahtar),
+  saga adımları (tradeID key), read model'ler (0'dan replay).
+- **Doğru veri tipi protokolü kaldırır.** Takas Raft-vari koordinasyon
+  ister (saga); toplam sayaç CRDT ile lidersiz yakınsar. Problemi araca
+  göre değil, aracı probleme göre seç.
+- **Dürüst dual-write borcu.** Chat balonu (dünya durumu) + ChatSaid
+  (log) iki yazma; süreç içi tek yazarla risk düşük, gerçek çözüm
+  (outbox/bus) Faz 4'e yazıldı — gizlenmedi.
+- **MVCC'nin event-store hâli.** Event'ler değişmez olduğundan bir
+  okuyucunun gördüğü [1..checkpoint] sonsuza dek sabit; versiyon = log
+  pozisyonu. Genel amaçlı snapshot isolation (Scan hâlâ kilitli) Faz 3.
 
 ## Çalıştırma
 

@@ -29,6 +29,7 @@ import (
 	"shardlands/pkg/auth"
 	"shardlands/services/chat"
 	"shardlands/services/inventory"
+	"shardlands/services/stats"
 	"shardlands/services/trade"
 	"shardlands/services/world"
 )
@@ -42,12 +43,14 @@ type Config struct {
 	Chat      *chat.History        // sohbet read model'i (sorgu tarafı)
 	Inventory *inventory.Inventory // envanter read model'i
 	Trades    *trade.Orchestrator  // takas saga koordinatörü
+	Stats     *stats.Stats         // global sayaçlar (CRDT)
 }
 
 type Gateway struct {
 	cfg      Config
 	upgrader websocket.Upgrader
 	tradeSeq atomic.Int64
+	online   atomic.Int64 // anlık çevrimiçi oyuncu (basit gauge; CRDT değil)
 }
 
 // New, gateway'in http.Handler'ını kurar.
@@ -57,6 +60,7 @@ func New(cfg Config) http.Handler {
 	mux.HandleFunc("POST /api/login", g.handleLogin)
 	mux.HandleFunc("GET /api/chat/recent", g.handleChatRecent)
 	mux.HandleFunc("GET /api/inventory", g.handleInventory)
+	mux.HandleFunc("GET /api/stats", g.handleStats)
 	mux.HandleFunc("POST /api/trade", g.handleTrade)
 	mux.HandleFunc("GET /ws", g.handleWS)
 	mux.Handle("/", noCache(http.FileServer(http.Dir(cfg.ClientDir))))
@@ -121,6 +125,16 @@ func (g *Gateway) handleInventory(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(g.cfg.Inventory.Get(playerID))
+}
+
+// handleStats: global sayaçlar. toplam toplanan CRDT G-Counter'dan
+// (Faz 3'te shard'lar arası merge ile yakınsar), çevrimiçi anlık gauge'dan.
+func (g *Gateway) handleStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"totalGathered": g.cfg.Stats.TotalGathered(),
+		"online":        g.online.Load(),
+	})
 }
 
 // handleTrade: takas teklifini orkestratöre verir. Proposer, token'dan
@@ -208,6 +222,15 @@ func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
+
+	// Çevrimiçi gauge'i process yaşam döngüsüne bağla (restart-güvenli:
+	// Stopped process tamamen durunca bir kez ateşlenir, aktör
+	// instance'ının restart'ından etkilenmez).
+	g.online.Add(1)
+	go func() {
+		<-ref.Stopped()
+		g.online.Add(-1)
+	}()
 
 	// Okuyucu goroutine: WS'den gelen her şey aktörün mailbox'ına.
 	// Bağlantı kopunca (hata) aktörü durdurur; Leave, PostStop'ta.

@@ -23,6 +23,10 @@
 </head>
 <body>
 <h1>SHARDLANDS</h1>
+<div id="globals" hidden style="font-size:13px; color:#8b949e;">
+  🌍 toplam toplanan: <b id="gTotal">0</b> <span style="opacity:0.6">(CRDT)</span>
+  · çevrimiçi: <b id="gOnline">0</b>
+</div>
 <div id="login">
   <input id="name" placeholder="isim" maxlength="24" autofocus>
   <button id="go">Hub'a Katıl</button>
@@ -71,8 +75,11 @@ async function join() {
     $("chat").hidden = false;
     $("trade").hidden = false;
     $("hud").textContent = "bağlandı — WASD/oklar · E: topla · sohbet kutusu · takas paneli";
+    $("globals").hidden = false;
     refreshChatLog();
+    refreshStats();
     setInterval(refreshChatLog, 5000);
+    setInterval(refreshStats, 2000);
   };
 
   // Takas: kimlik doğrulanmış oyuncu (bu token) teklif verir; sunucudaki
@@ -191,6 +198,14 @@ function drawNode(n) {
     ctx.textAlign = "center";
     ctx.fillText("E: topla", n.x, n.y + 26);
   }
+}
+
+async function refreshStats() {
+  try {
+    const s = await (await fetch("/api/stats")).json();
+    $("gTotal").textContent = s.totalGathered;
+    $("gOnline").textContent = s.online;
+  } catch {}
 }
 
 async function refreshInventory() {
