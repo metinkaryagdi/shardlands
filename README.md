@@ -17,6 +17,7 @@ pkg/clock/     Faz 0: Lamport / vector clock                           ✅
 pkg/auth/      Faz 1: minimal HS256 JWT (stdlib)                       ✅
 pkg/es/        Faz 2: event store (LSM üstünde, CQRS/ES)               ✅
 pkg/crdt/      Faz 2: G/PN-Counter CRDT                                ✅
+pkg/hashring/  Faz 3: consistent hashing (vnode'lu)                    ✅
 proto/         Faz 1: gRPC/Protobuf kontratları (buf ile codegen)      ✅
 gen/           Üretilen Go kodu (commit'li — araçsız build için)       ✅
 services/      Faz 1+: gateway, player, world, matchmaking, server     ✅
