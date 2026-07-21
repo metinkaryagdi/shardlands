@@ -84,10 +84,13 @@ her aktör = process {
   garantisi kayıptan önemli — unbounded ctrl kuyruğu deadlock'ları kesti.
 - **Kapanış yarışları.** "Ölü aktörün dolu mailbox'ına Block ile gönderen
   sonsuza dek takılır" hatası, gönderim select'ine `stoppedCh`
-  eklenerek çözüldü. Kapanma sırası (önce `dead` bayrağı, sonra
-  `close(stoppedCh)`, sonra drain) bilinçli; nadir bir yarışta mesaj dead
-  letter sayılmadan düşebilir — dağıtık sistemlerde "exactly-once teslim
-  yoktur" dersinin minyatürü.
+  eklenerek çözüldü. Kapanma sırası bilinçli: `dead` bayrağı → drain →
+  `close(stoppedCh)` → son drain. Drain'in close'tan önce bitmesi,
+  `Stopped()` ateşlendiğinde dead letter muhasebesinin tamamlanmış
+  olmasını garanti eder (ilk sürümde close önce geliyordu ve testler
+  sayacı erken okuyabiliyordu — flaky test olarak yakalandı). Nadir bir
+  yarışta mesaj yine de sayılmadan düşebilir — dağıtık sistemlerde
+  "exactly-once teslim yoktur" dersinin minyatürü.
 - **Testlerde senkronizasyon sinyalle olmalı.** `sleep` tabanlı testler
   yerine kanal sinyalleri (`sums`, `processed`, `Stopped()`)
   determinizm sağladı; iki test ilk turda tam da eksik senkronizasyon

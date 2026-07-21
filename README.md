@@ -11,7 +11,7 @@ uca uygulamak.
 ```
 pkg/actor/     Faz 0: sıfırdan actor framework (mailbox, supervision)  ✅
 pkg/ringbuf/   Faz 0: lock-free MPSC ring buffer                       ✅
-pkg/storage/   Faz 0: LSM-tree storage engine                          ⬜
+pkg/storage/   Faz 0: LSM-tree storage engine                          ✅
 pkg/raft/      Faz 0: Raft konsensüs                                   ⬜
 pkg/clock/     Faz 0: Lamport / vector clock                           ⬜
 services/      Faz 1+: gateway, player, world, matchmaking             ⬜
@@ -25,7 +25,7 @@ client/        HTML5 Canvas + vanilla JS istemci                       ⬜
 |---|---|---|
 | Actor framework | ✅ | [pkg/actor](pkg/actor/README.md) — mailbox, supervision, restart stratejileri |
 | Lock-free ring buffer | ✅ | [pkg/ringbuf](pkg/ringbuf/README.md) — Vyukov MPSC, mailbox'a entegre, kanaldan ~6× hızlı |
-| LSM-tree storage engine | ⬜ | |
+| LSM-tree storage engine | ✅ | [pkg/storage](pkg/storage/README.md) — skip list memtable, SSTable+bloom, WAL, manifest, compaction |
 | Raft | ⬜ | |
 | Logical clocks | ⬜ | |
 

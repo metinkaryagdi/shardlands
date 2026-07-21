@@ -188,17 +188,27 @@ func (p *process) shutdown() {
 	p.exited = true
 	p.stopChildrenAndWait()
 	p.safePostStop()
+	// Sıra önemli: dead bayrağı → drain → close(stoppedCh) → son drain.
+	// Drain close'tan ÖNCE biter ki Stopped() ateşlendiğinde dead letter
+	// muhasebesi tamamlanmış olsun (testler ve gözlemciler buna güvenir).
+	// Son drain, ilk drain sırasında spaceFreed sinyaliyle uyanıp mesaj
+	// itmeyi başarmış Block üreticilerinin artıklarını yakalar.
 	p.dead.Store(true)
+	p.drainToDeadLetters()
 	close(p.stoppedCh)
+	p.drainToDeadLetters()
+	if p.parent != nil {
+		p.parent.ctrl.push(ctrlChildStopped{name: p.name})
+	}
+}
+
+func (p *process) drainToDeadLetters() {
 	for {
 		env, ok := p.user.tryPop()
 		if !ok {
-			break
+			return
 		}
 		p.system.deadLetter(p.ref, env.msg)
-	}
-	if p.parent != nil {
-		p.parent.ctrl.push(ctrlChildStopped{name: p.name})
 	}
 }
 
@@ -239,6 +249,12 @@ func (p *process) sendUser(env envelope) {
 	for {
 		select {
 		case <-p.user.spaceFreed():
+			// Uyandıran, ölmekte olan aktörün drain'i olabilir; ölüye
+			// itmeye çalışmak yerine dead letter'a düş.
+			if p.dead.Load() {
+				p.system.deadLetter(p.ref, env.msg)
+				return
+			}
 		case <-p.stoppedCh:
 			p.system.deadLetter(p.ref, env.msg)
 			return
