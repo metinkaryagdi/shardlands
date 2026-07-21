@@ -31,7 +31,7 @@ type process struct {
 	actor  Actor
 	ctx    *Context
 
-	user      chan envelope
+	user      *userMailbox
 	ctrl      *ctrlQueue
 	stoppedCh chan struct{}
 	dead      atomic.Bool // sendUser'ın hızlı yolu; stoppedCh kapanmadan önce set edilir
@@ -53,7 +53,7 @@ func newProcess(system *System, parent *process, props Props, name string) *proc
 		props:     props,
 		parent:    parent,
 		name:      name,
-		user:      make(chan envelope, size),
+		user:      newUserMailbox(size),
 		ctrl:      newCtrlQueue(),
 		stoppedCh: make(chan struct{}),
 		children:  map[string]*Ref{},
@@ -80,11 +80,15 @@ func (p *process) run() {
 			p.handleCtrl(c)
 			continue
 		}
+		if env, ok := p.user.tryPop(); ok {
+			p.invoke(env)
+			continue
+		}
+		// İki kuyruk da boş: ilk sinyale kadar uyu. Sinyaller
+		// coalesced olduğundan uyanınca başa dönüp tekrar denenir.
 		select {
 		case <-p.ctrl.wait():
-			// Sinyal geldi; başa dönüp pop ile çek.
-		case env := <-p.user:
-			p.invoke(env)
+		case <-p.user.wait():
 		}
 	}
 }
@@ -186,14 +190,12 @@ func (p *process) shutdown() {
 	p.safePostStop()
 	p.dead.Store(true)
 	close(p.stoppedCh)
-drain:
 	for {
-		select {
-		case env := <-p.user:
-			p.system.deadLetter(p.ref, env.msg)
-		default:
-			break drain
+		env, ok := p.user.tryPop()
+		if !ok {
+			break
 		}
+		p.system.deadLetter(p.ref, env.msg)
 	}
 	if p.parent != nil {
 		p.parent.ctrl.push(ctrlChildStopped{name: p.name})
@@ -224,18 +226,25 @@ func (p *process) sendUser(env envelope) {
 		p.system.deadLetter(p.ref, env.msg)
 		return
 	}
-	switch p.props.Overflow {
-	case DropNewest:
+	if p.user.tryPush(env) {
+		return
+	}
+	if p.props.Overflow == DropNewest {
+		p.system.deadLetter(p.ref, env.msg)
+		return
+	}
+	// Block: yer açılana ya da aktör ölene kadar bekle-ve-tekrar-dene.
+	// space sinyali coalesced olduğundan uyanmak garanti, slot kapmak
+	// değil (başka üretici önce davranabilir); o yüzden döngü şart.
+	for {
 		select {
-		case p.user <- env:
-		default:
-			p.system.deadLetter(p.ref, env.msg)
-		}
-	default: // Block
-		select {
-		case p.user <- env:
+		case <-p.user.spaceFreed():
 		case <-p.stoppedCh:
 			p.system.deadLetter(p.ref, env.msg)
+			return
+		}
+		if p.user.tryPush(env) {
+			return
 		}
 	}
 }

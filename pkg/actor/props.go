@@ -14,7 +14,8 @@ type Props struct {
 	// Name boşsa otomatik üretilir ("actor-N"). Aynı ebeveyn altında
 	// benzersiz olmalıdır; '/' içeremez.
 	Name string
-	// MailboxSize <= 0 ise 64 kullanılır.
+	// MailboxSize <= 0 ise 64 kullanılır. Gerçek kapasite bir üst 2
+	// kuvvetine yuvarlanır ve en az 2'dir (ring buffer gereksinimi).
 	MailboxSize int
 	// Overflow, mailbox dolduğundaki davranış (varsayılan: Block).
 	Overflow OverflowPolicy

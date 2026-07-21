@@ -1,6 +1,10 @@
 package actor
 
-import "sync"
+import (
+	"sync"
+
+	"shardlands/pkg/ringbuf"
+)
 
 // envelope, mesajı göndereniyle birlikte taşır.
 type envelope struct {
@@ -24,6 +28,63 @@ const (
 	// Gecikmeye duyarlı, kaybı tolere eden akışlar için.
 	DropNewest
 )
+
+// userMailbox, kullanıcı mesajları için lock-free MPSC ring buffer +
+// kanal tabanlı uyandırma sinyalleridir. Ring buffer poll tabanlı olduğu
+// için bloklama iki cap-1 sinyal kanalıyla kurulur:
+//
+//	notify: üretici push'tan SONRA sinyaller; boş kuyrukta bekleyen
+//	        tüketiciyi uyandırır.
+//	space:  tüketici pop'tan SONRA sinyaller; dolu kuyrukta (Block
+//	        politikası) bekleyen üreticiyi uyandırır.
+//
+// Sinyaller birleştirilir (coalesced): kanal doluysa yeni sinyal
+// düşer. Bu kayıp değildir — sinyal "durum değişti, tekrar dene"
+// demektir, mesajın kendisi ring buffer'dadır. Uyanan taraf her zaman
+// bir try döngüsüyle yeniden dener.
+type userMailbox struct {
+	q      *ringbuf.MPSC[envelope]
+	notify chan struct{}
+	space  chan struct{}
+}
+
+func newUserMailbox(capacity int) *userMailbox {
+	return &userMailbox{
+		q:      ringbuf.New[envelope](capacity),
+		notify: make(chan struct{}, 1),
+		space:  make(chan struct{}, 1),
+	}
+}
+
+func (m *userMailbox) tryPush(env envelope) bool {
+	if !m.q.TryPush(env) {
+		return false
+	}
+	signal(m.notify)
+	return true
+}
+
+// tryPop yalnızca aktörün kendi goroutine'inden çağrılır (single consumer).
+func (m *userMailbox) tryPop() (envelope, bool) {
+	env, ok := m.q.TryPop()
+	if ok {
+		signal(m.space)
+	}
+	return env, ok
+}
+
+// wait: "kuyruğa mesaj geldi" sinyali (tüketici için).
+func (m *userMailbox) wait() <-chan struct{} { return m.notify }
+
+// spaceFreed: "kuyrukta yer açıldı" sinyali (Block'taki üretici için).
+func (m *userMailbox) spaceFreed() <-chan struct{} { return m.space }
+
+func signal(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
 
 // ctrlQueue, kontrol mesajları için unbounded MPSC kuyruktur. Unbounded
 // olması bilinçli: kontrol mesajları (childStopped, escalation, stop)

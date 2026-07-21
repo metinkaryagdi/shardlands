@@ -68,8 +68,10 @@ her aktör = process {
 - `ask/request-response` deseni yok (gerekince eklenecek).
 - Stop, `Receive` içinde sonsuza dek bloklanan kullanıcı kodunu
   kesemez (zaman aşımı yok) — aktörler bloklamamalı.
-- Mailbox şu an Go kanalı; Faz 0'ın lock-free ring buffer'ı yazılınca
-  performans karşılaştırması yapılıp takas edilebilir hale getirilecek.
+- Mailbox artık [pkg/ringbuf](../ringbuf/README.md) üzerinde: lock-free
+  MPSC ring buffer + cap-1 coalesced uyandırma sinyalleri (notify/space).
+  Kanal sürümüne göre saf kuyruk maliyeti ~6× düştü; blok/bekleme
+  semantiği sinyal katmanında korunuyor.
 - AllForOne (kardeşleri birlikte restart) stratejisi yok; OneForOne var.
 
 ## Learnings

@@ -1,6 +1,7 @@
 package actor_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -107,10 +108,14 @@ func TestDropNewestOverflow(t *testing.T) {
 	defer s.Shutdown()
 
 	gate := make(chan struct{})
-	processed := make(chan string, 4)
+	// Test bir assert'te düşerse bile aktörü gate'te asılı bırakma;
+	// yoksa defer'deki Shutdown, bloklu Receive'i sonsuza dek bekler.
+	openGate := sync.OnceFunc(func() { close(gate) })
+	defer openGate()
+	processed := make(chan string, 8)
 
 	ref := mustSpawn(t, s, actor.Props{
-		MailboxSize: 1,
+		MailboxSize: 2, // ring buffer asgari kapasitesi (cap-1 protokolde çakışıyor)
 		Overflow:    actor.DropNewest,
 		Producer: func() actor.Actor {
 			return actor.ReceiverFunc(func(ctx *actor.Context) {
@@ -129,17 +134,21 @@ func TestDropNewestOverflow(t *testing.T) {
 		t.Fatalf("first processed = %q, want m1", m)
 	}
 	// m1 işleniyor (gate'te bloklu), buffer boş.
-	ref.Send("m2") // buffer'a girer (cap 1)
-	ref.Send("m3") // buffer dolu -> düşer
+	ref.Send("m2") // buffer'a girer
+	ref.Send("m3") // buffer'a girer (cap 2)
+	ref.Send("m4") // buffer dolu -> düşer
 	if got := s.DeadLetterCount(); got != 1 {
-		t.Fatalf("dead letters = %d, want 1 (m3 dropped)", got)
+		t.Fatalf("dead letters = %d, want 1 (m4 dropped)", got)
 	}
 
-	close(gate)
+	openGate()
 	if m := <-processed; m != "m2" {
 		t.Fatalf("second processed = %q, want m2", m)
 	}
-	// m2 işlendi, buffer boş: Poison artık düşmeden sıraya girebilir.
+	if m := <-processed; m != "m3" {
+		t.Fatalf("third processed = %q, want m3", m)
+	}
+	// m2 ve m3 işlendi, buffer boş: Poison artık düşmeden sıraya girebilir.
 	ref.Poison()
 	waitStopped(t, ref)
 
