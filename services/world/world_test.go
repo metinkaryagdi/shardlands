@@ -162,12 +162,11 @@ func TestChatBubbleAndEvent(t *testing.T) {
 		t.Fatalf("event data = %+v", said)
 	}
 
-	// Balon ~4 saniye (bubbleTicks) sonra silinmeli.
-	for i := 0; i < 4*world.TickRate; i++ {
-		w.Send(world.Tick{})
-	}
+	// Balon ~4 saniye (bubbleTicks) sonra silinmeli. Tick gönder/oku iç
+	// içe (boru hattı tamponlarını taşırmamak için — bkz. gather testi).
 	var last world.Snapshot
 	for i := 0; i < 4*world.TickRate; i++ {
+		w.Send(world.Tick{})
 		last = nextSnap(t, ch1)
 	}
 	if last.Players[0].Bubble != "" {
@@ -187,6 +186,97 @@ func TestChatBubbleAndEvent(t *testing.T) {
 	}
 }
 
+// Toplama: menzil kontrolü, node tüketimi, event basımı ve respawn.
+func TestGatherDepleteAndRespawn(t *testing.T) {
+	dir, err := os.MkdirTemp("", "shardlands-world-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	store, err := es.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sys := actor.NewSystem("test")
+	defer sys.Shutdown()
+	w, err := sys.Spawn(world.Props(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1, ch1 := collector(t, sys, "sess1")
+	w.Send(world.Join{PlayerID: "p1", Name: "ayşe", Session: s1})
+
+	// Merkezden (400,300) uzaktaki node menzil dışı: toplama sessizce
+	// başarısız olmalı (n5 (400,180) 120px uzakta, menzil 48).
+	w.Send(world.Gather{PlayerID: "p1"})
+	if evs, _ := store.ReadStream(world.InvStream("p1"), 0, 0); len(evs) != 0 {
+		t.Fatalf("out-of-range gather appended %d events", len(evs))
+	}
+
+	// n5'e yürü: yukarı 12 tick = 120px → (400,180). Tick gönder/oku
+	// İÇ İÇE: toplu göndermek world→collector→kanal boru hattının
+	// tamponlarını (64+64+64) aşınca deadlock olur — Block mailbox'lı
+	// aktör zincirlerinde backpressure gerçek bir şeydir.
+	w.Send(world.Input{PlayerID: "p1", Up: true})
+	for i := 0; i < 12; i++ {
+		w.Send(world.Tick{})
+		nextSnap(t, ch1)
+	}
+	w.Send(world.Input{PlayerID: "p1"}) // dur
+
+	w.Send(world.Gather{PlayerID: "p1"})
+	w.Send(world.Tick{})
+	snap := nextSnap(t, ch1)
+	var n5 world.NodeState
+	for _, n := range snap.Nodes {
+		if n.ID == "n5" {
+			n5 = n
+		}
+	}
+	if n5.Available {
+		t.Fatal("gathered node must be depleted in snapshot")
+	}
+
+	evs, err := store.ReadStream(world.InvStream("p1"), 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Type != world.EventResourceGathered {
+		t.Fatalf("inv events = %+v, want 1 ResourceGathered", evs)
+	}
+	var g world.ResourceGathered
+	json.Unmarshal(evs[0].Data, &g)
+	if g.NodeID != "n5" || g.Kind != "wood" || g.Amount != 1 || g.PlayerID != "p1" {
+		t.Fatalf("event data = %+v", g)
+	}
+
+	// Tükenmiş node tekrar toplanamaz.
+	w.Send(world.Gather{PlayerID: "p1"})
+	if evs, _ := store.ReadStream(world.InvStream("p1"), 0, 0); len(evs) != 1 {
+		t.Fatalf("depleted node re-gathered: %d events", len(evs))
+	}
+
+	// Respawn: RespawnTicks sonra node yeniden müsait ve toplanabilir.
+	var last world.Snapshot
+	for i := 0; i < world.RespawnTicks+1; i++ {
+		w.Send(world.Tick{})
+		last = nextSnap(t, ch1)
+	}
+	for _, n := range last.Nodes {
+		if n.ID == "n5" && !n.Available {
+			t.Fatal("node did not respawn")
+		}
+	}
+	w.Send(world.Gather{PlayerID: "p1"})
+	w.Send(world.Tick{}) // aktörün Gather'ı işlediğinden emin ol (senkron noktası)
+	nextSnap(t, ch1)
+	if evs, _ := store.ReadStream(world.InvStream("p1"), 0, 0); len(evs) != 2 {
+		t.Fatalf("respawned node not gatherable: %d events, want 2", len(evs))
+	}
+}
+
 // Dünya sınırları: sola koşmaya devam eden oyuncu 0'da durmalı.
 func TestClampAtBounds(t *testing.T) {
 	sys := actor.NewSystem("test")
@@ -197,13 +287,11 @@ func TestClampAtBounds(t *testing.T) {
 	w.Send(world.Join{PlayerID: "p1", Name: "a", Session: s1})
 	w.Send(world.Input{PlayerID: "p1", Left: true})
 
-	// Merkezden sol kenara yeter de artar sayıda tick.
+	// Merkezden sol kenara yeter de artar sayıda tick (gönder/oku iç içe).
 	needed := int(world.Width/2/(world.Speed/world.TickRate)) + 5
-	for i := 0; i < needed; i++ {
-		w.Send(world.Tick{})
-	}
 	var last world.Snapshot
 	for i := 0; i < needed; i++ {
+		w.Send(world.Tick{})
 		last = nextSnap(t, ch1)
 	}
 	if last.Players[0].X != 0 {

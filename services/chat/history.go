@@ -53,26 +53,7 @@ func NewHistory(store *es.Store) *History {
 
 func (h *History) run() {
 	defer close(h.done)
-	notify, cancel := h.store.Subscribe()
-	defer cancel()
-
-	var checkpoint uint64
-	for {
-		evs, err := h.store.ReadAll(checkpoint+1, 256)
-		if err != nil {
-			log.Printf("chat history: read: %v", err)
-		}
-		if len(evs) > 0 {
-			h.apply(evs)
-			checkpoint = evs[len(evs)-1].Global
-			continue // aynı turda devamı olabilir
-		}
-		select {
-		case <-notify:
-		case <-h.stop:
-			return
-		}
-	}
+	es.Project(h.store, h.stop, h.apply)
 }
 
 func (h *History) apply(evs []es.Event) {

@@ -26,6 +26,7 @@ import (
 	"shardlands/pkg/actor"
 	"shardlands/pkg/auth"
 	"shardlands/services/chat"
+	"shardlands/services/inventory"
 	"shardlands/services/world"
 )
 
@@ -35,7 +36,8 @@ type Config struct {
 	System    *actor.System
 	World     *actor.Ref
 	Players   pb.PlayerServiceClient
-	Chat      *chat.History // sohbet read model'i (sorgu tarafı)
+	Chat      *chat.History        // sohbet read model'i (sorgu tarafı)
+	Inventory *inventory.Inventory // envanter read model'i
 }
 
 type Gateway struct {
@@ -49,6 +51,7 @@ func New(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", g.handleLogin)
 	mux.HandleFunc("GET /api/chat/recent", g.handleChatRecent)
+	mux.HandleFunc("GET /api/inventory", g.handleInventory)
 	mux.HandleFunc("GET /ws", g.handleWS)
 	mux.Handle("/", http.FileServer(http.Dir(cfg.ClientDir)))
 	return mux
@@ -90,6 +93,17 @@ func (g *Gateway) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"playerId": resp.PlayerId,
 		"token":    resp.Token,
 	})
+}
+
+// handleInventory: oyuncunun envanteri (read model'den).
+func (g *Gateway) handleInventory(w http.ResponseWriter, r *http.Request) {
+	playerID := r.URL.Query().Get("player")
+	if playerID == "" {
+		http.Error(w, "player query param required", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(g.cfg.Inventory.Get(playerID))
 }
 
 // ---- WebSocket + session aktörü ----
@@ -142,7 +156,9 @@ func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var m clientMsg
-			if json.Unmarshal(data, &m) == nil && (m.Type == "input" || m.Type == "chat") {
+			switch {
+			case json.Unmarshal(data, &m) != nil:
+			case m.Type == "input" || m.Type == "chat" || m.Type == "gather":
 				ref.Send(m)
 			}
 		}
@@ -170,11 +186,17 @@ func (s *session) Receive(ctx *actor.Context) {
 		for i, p := range m.Players {
 			players[i] = map[string]any{"id": p.ID, "name": p.Name, "x": p.X, "y": p.Y, "bubble": p.Bubble}
 		}
-		s.write(ctx, map[string]any{"type": "snapshot", "tick": m.Tick, "players": players})
+		nodes := make([]map[string]any, len(m.Nodes))
+		for i, n := range m.Nodes {
+			nodes[i] = map[string]any{"id": n.ID, "kind": n.Kind, "x": n.X, "y": n.Y, "available": n.Available}
+		}
+		s.write(ctx, map[string]any{"type": "snapshot", "tick": m.Tick, "players": players, "nodes": nodes})
 	case clientMsg:
 		switch m.Type {
 		case "chat":
 			ctx.Send(s.world, world.Chat{PlayerID: s.id, Text: m.Text})
+		case "gather":
+			ctx.Send(s.world, world.Gather{PlayerID: s.id})
 		default: // "input"
 			ctx.Send(s.world, world.Input{
 				PlayerID: s.id,

@@ -20,6 +20,7 @@ package world
 import (
 	"encoding/json"
 	"log"
+	"math"
 	"sort"
 	"strings"
 
@@ -35,6 +36,9 @@ const (
 
 	maxChatLen  = 120
 	bubbleTicks = 4 * TickRate // balon ~4 saniye görünür
+
+	GatherRadius = 48.0          // toplama menzili (px)
+	RespawnTicks = 10 * TickRate // tüketilen node ~10 saniyede yeniden doğar
 )
 
 // Event sözleşmesi: read model'ler (projection'lar) bu sabitlere ve
@@ -45,13 +49,39 @@ const (
 const (
 	ChatStream    = "chat"
 	EventChatSaid = "ChatSaid"
+
+	EventResourceGathered = "ResourceGathered"
 )
+
+// InvStream, oyuncunun envanter aggregate'inin stream adıdır. Toplama
+// ve (Faz 2'nin devamında) takas event'leri bu stream'e yazılır —
+// envanterin tüm tarihi tek yerde.
+func InvStream(playerID string) string { return "inv-" + playerID }
 
 // ChatSaid, EventChatSaid event'inin veri şeklidir.
 type ChatSaid struct {
 	PlayerID string `json:"playerId"`
 	Name     string `json:"name"`
 	Text     string `json:"text"`
+}
+
+// ResourceGathered, EventResourceGathered event'inin veri şeklidir.
+type ResourceGathered struct {
+	PlayerID string `json:"playerId"`
+	Name     string `json:"name"`
+	NodeID   string `json:"nodeId"`
+	Kind     string `json:"kind"` // "wood" | "crystal"
+	Amount   int    `json:"amount"`
+}
+
+// nodeLayout: hub'ın sabit kaynak yerleşimi. Deterministik sıra hem
+// testler hem snapshot kararlılığı için (map değil slice).
+var nodeLayout = []NodeState{
+	{ID: "n1", Kind: "wood", X: 150, Y: 150},
+	{ID: "n2", Kind: "wood", X: 650, Y: 150},
+	{ID: "n3", Kind: "crystal", X: 150, Y: 450},
+	{ID: "n4", Kind: "crystal", X: 650, Y: 450},
+	{ID: "n5", Kind: "wood", X: 400, Y: 180},
 }
 
 // ---- aktöre gönderilen mesajlar ----
@@ -82,17 +112,33 @@ type Chat struct {
 	Text     string
 }
 
+// Gather: oyuncu toplamak istiyor. Hangi node'un toplanacağına SUNUCU
+// karar verir (menzildeki en yakın müsait node) — istemciye node
+// seçtirmek, menzil hilesine kapı açardı.
+type Gather struct {
+	PlayerID string
+}
+
 // Tick: simülasyonu bir adım ilerlet (dış zamanlayıcıdan).
 type Tick struct{}
 
 // ---- oturumlara yayınlanan mesaj ----
 
-// Snapshot, tick sonrası dünyanın tamamıdır (ID'ye göre sıralı —
-// deterministik). Alıcılar dilimi DEĞİŞTİRMEMELİDİR: aynı değer tüm
-// oturumlara gönderilir. Delta/AOI optimizasyonu Faz 5'te.
+// Snapshot, tick sonrası dünyanın tamamıdır (oyuncular ID'ye göre,
+// node'lar yerleşim sırasına göre — deterministik). Alıcılar dilimleri
+// DEĞİŞTİRMEMELİDİR: aynı değer tüm oturumlara gönderilir.
 type Snapshot struct {
 	Tick    uint64
 	Players []PlayerState
+	Nodes   []NodeState
+}
+
+// NodeState, bir kaynak node'unun istemciye görünen halidir.
+type NodeState struct {
+	ID        string
+	Kind      string
+	X, Y      float64
+	Available bool
 }
 
 type PlayerState struct {
@@ -106,8 +152,14 @@ type PlayerState struct {
 // kalıcılık istemeyen senaryolar için); nil ise event basılmaz.
 func Props(events *es.Store) actor.Props {
 	return actor.Props{
-		Name:     "world",
-		Producer: func() actor.Actor { return &hub{players: map[string]*entity{}, events: events} },
+		Name: "world",
+		Producer: func() actor.Actor {
+			h := &hub{players: map[string]*entity{}, events: events}
+			for _, n := range nodeLayout {
+				h.nodes = append(h.nodes, &node{NodeState: n})
+			}
+			return h
+		},
 	}
 }
 
@@ -120,9 +172,17 @@ type entity struct {
 	bubbleUntil uint64 // bu tick'te veya sonrasında balon silinir
 }
 
+type node struct {
+	NodeState
+	respawnAt uint64 // 0 = müsait; değilse bu tick'te yeniden doğar
+}
+
+func (n *node) available() bool { return n.respawnAt == 0 }
+
 type hub struct {
 	tick    uint64
 	players map[string]*entity
+	nodes   []*node
 	events  *es.Store
 }
 
@@ -142,6 +202,8 @@ func (h *hub) Receive(ctx *actor.Context) {
 		}
 	case Chat:
 		h.handleChat(m)
+	case Gather:
+		h.handleGather(m)
 	case Tick:
 		h.step()
 		snap := h.snapshot()
@@ -176,8 +238,48 @@ func (h *hub) handleChat(m Chat) {
 	}
 }
 
+// handleGather: menzildeki en yakın müsait node'u tüket ve
+// ResourceGathered event'ini oyuncunun envanter stream'ine yaz.
+// Envanterin kendisi burada TUTULMAZ — sayımlar read model'in işi;
+// dünya yalnızca node durumunu (müsait/tükenmiş) bilir.
+func (h *hub) handleGather(m Gather) {
+	e, ok := h.players[m.PlayerID]
+	if !ok {
+		return
+	}
+	var best *node
+	bestDist := GatherRadius
+	for _, n := range h.nodes {
+		if !n.available() {
+			continue
+		}
+		if d := math.Hypot(n.X-e.x, n.Y-e.y); d <= bestDist {
+			best, bestDist = n, d
+		}
+	}
+	if best == nil {
+		return // menzilde müsait node yok
+	}
+	best.respawnAt = h.tick + RespawnTicks
+	if h.events == nil {
+		return
+	}
+	data, _ := json.Marshal(ResourceGathered{
+		PlayerID: e.id, Name: e.name, NodeID: best.ID, Kind: best.Kind, Amount: 1,
+	})
+	if _, err := h.events.Append(InvStream(e.id), es.AnyVersion,
+		es.EventData{Type: EventResourceGathered, Data: data}); err != nil {
+		log.Printf("world: gather event append: %v", err)
+	}
+}
+
 func (h *hub) step() {
 	const dt = 1.0 / TickRate
+	for _, n := range h.nodes {
+		if n.respawnAt != 0 && h.tick >= n.respawnAt {
+			n.respawnAt = 0
+		}
+	}
 	for _, e := range h.players {
 		if e.bubbleUntil != 0 && h.tick >= e.bubbleUntil {
 			e.bubble, e.bubbleUntil = "", 0
@@ -207,7 +309,12 @@ func (h *hub) snapshot() Snapshot {
 		ps = append(ps, PlayerState{ID: e.id, Name: e.name, X: e.x, Y: e.y, Bubble: e.bubble})
 	}
 	sort.Slice(ps, func(i, j int) bool { return ps[i].ID < ps[j].ID })
-	return Snapshot{Tick: h.tick, Players: ps}
+	ns := make([]NodeState, len(h.nodes))
+	for i, n := range h.nodes {
+		ns[i] = n.NodeState
+		ns[i].Available = n.available()
+	}
+	return Snapshot{Tick: h.tick, Players: ps, Nodes: ns}
 }
 
 func clamp(v, lo, hi float64) float64 {

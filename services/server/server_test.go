@@ -88,6 +88,13 @@ type wireMsg struct {
 		Y      float64 `json:"y"`
 		Bubble string  `json:"bubble"`
 	} `json:"players"`
+	Nodes []struct {
+		ID        string  `json:"id"`
+		Kind      string  `json:"kind"`
+		X         float64 `json:"x"`
+		Y         float64 `json:"y"`
+		Available bool    `json:"available"`
+	} `json:"nodes"`
 }
 
 func readMsg(t *testing.T, c *websocket.Conn) wireMsg {
@@ -219,6 +226,70 @@ func TestChatBubbleHistoryAndRestart(t *testing.T) {
 	if !waitChat(srv2.HTTPAddr) {
 		t.Fatal("chat history lost after server restart")
 	}
+}
+
+// Kaynak dilimi: node'a yürü → E ile topla → node snapshot'ta tükenir →
+// envanter read model'i /api/inventory'de görünür.
+func TestGatherAndInventoryE2E(t *testing.T) {
+	srv := startTestServer(t)
+	id, tok := login(t, srv.HTTPAddr, "toplayıcı")
+	ws := dialWS(t, srv.HTTPAddr, tok)
+	readMsg(t, ws) // welcome
+
+	// n5 (400,180)'e doğru yukarı yürü (spawn: 400,300).
+	if err := ws.WriteJSON(map[string]any{"type": "input", "up": true}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	arrived := false
+	for !arrived && time.Now().Before(deadline) {
+		m := readMsg(t, ws)
+		if m.Type != "snapshot" {
+			continue
+		}
+		for _, p := range m.Players {
+			if p.ID == id && p.Y <= 190 {
+				arrived = true
+			}
+		}
+	}
+	if !arrived {
+		t.Fatal("player never reached the node")
+	}
+	ws.WriteJSON(map[string]any{"type": "input"}) // dur
+	ws.WriteJSON(map[string]any{"type": "gather"})
+
+	// Node tükenmiş görünmeli.
+	depleted := false
+	for !depleted && time.Now().Before(deadline) {
+		m := readMsg(t, ws)
+		if m.Type != "snapshot" {
+			continue
+		}
+		for _, n := range m.Nodes {
+			if n.ID == "n5" && !n.Available {
+				depleted = true
+			}
+		}
+	}
+	if !depleted {
+		t.Fatal("node never depleted after gather")
+	}
+
+	// Envanter read model'i (eventual consistency — kısa bekleme).
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + srv.HTTPAddr + "/api/inventory?player=" + id)
+		if err == nil {
+			var inv map[string]int
+			json.NewDecoder(resp.Body).Decode(&inv)
+			resp.Body.Close()
+			if inv["wood"] == 1 {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("inventory read model never showed gathered wood")
 }
 
 // Kimliksiz/bozuk token'la WS el sıkışması reddedilmeli.

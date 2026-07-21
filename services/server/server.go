@@ -22,6 +22,7 @@ import (
 	"shardlands/pkg/es"
 	"shardlands/services/chat"
 	"shardlands/services/gateway"
+	"shardlands/services/inventory"
 	"shardlands/services/matchmaking"
 	"shardlands/services/player"
 	"shardlands/services/world"
@@ -45,6 +46,7 @@ type Server struct {
 	system   *actor.System
 	events   *es.Store
 	chatHist *chat.History
+	inv      *inventory.Inventory
 	stopTick chan struct{}
 	stopOnce sync.Once
 }
@@ -83,6 +85,7 @@ func Start(cfg Config) (*Server, error) {
 	}
 	s.events = events
 	s.chatHist = chat.NewHistory(events)
+	s.inv = inventory.New(events)
 
 	// Dünya: aktör + dış tick zamanlayıcısı.
 	s.system = actor.NewSystem("shardlands")
@@ -118,6 +121,7 @@ func Start(cfg Config) (*Server, error) {
 		World:     worldRef,
 		Players:   pb.NewPlayerServiceClient(playerConn),
 		Chat:      s.chatHist,
+		Inventory: s.inv,
 	})}
 	go s.httpSrv.Serve(httpLis)
 
@@ -154,6 +158,9 @@ func (s *Server) stop() {
 	}
 	if s.chatHist != nil {
 		s.chatHist.Close()
+	}
+	if s.inv != nil {
+		s.inv.Close()
 	}
 	if s.events != nil {
 		s.events.Close()

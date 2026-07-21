@@ -32,7 +32,8 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const canvas = $("c"), ctx = canvas.getContext("2d");
-let me = null, players = [], tick = 0;
+let me = null, players = [], nodes = [], tick = 0, inventory = {};
+const KIND_TR = { wood: "odun", crystal: "kristal" };
 
 async function join() {
   const name = $("name").value.trim();
@@ -59,8 +60,8 @@ async function join() {
   ws.onclose = () => { $("hud").textContent = "bağlantı koptu"; };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
-    if (m.type === "welcome") { me = m.id; }
-    else if (m.type === "snapshot") { tick = m.tick; players = m.players; draw(); }
+    if (m.type === "welcome") { me = m.id; refreshInventory(); setInterval(refreshInventory, 3000); }
+    else if (m.type === "snapshot") { tick = m.tick; players = m.players; nodes = m.nodes || []; draw(); }
   };
 
   // Girdi: basılı tuş DURUMU gönderilir (pozisyon değil — sunucu
@@ -77,6 +78,12 @@ async function join() {
   const typing = () => document.activeElement === $("chat");
   addEventListener("keydown", e => { if (!typing() && map[e.code]) { e.preventDefault(); setKey(e.code, true); } });
   addEventListener("keyup",   e => { if (!typing() && map[e.code]) { e.preventDefault(); setKey(e.code, false); } });
+  addEventListener("keydown", e => {
+    if (!typing() && e.code === "KeyE" && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "gather" }));
+      setTimeout(refreshInventory, 300);
+    }
+  });
 
   $("chat").addEventListener("keydown", e => {
     if (e.key !== "Enter") return;
@@ -102,6 +109,7 @@ function draw() {
   for (let y = 0; y <= canvas.height; y += 50) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
   }
+  for (const n of nodes) drawNode(n);
   for (const p of players) {
     const self = p.id === me;
     ctx.beginPath();
@@ -116,6 +124,48 @@ function draw() {
     ctx.fillText(p.name, p.x, p.y - 22);
     if (p.bubble) drawBubble(p);
   }
+}
+
+function drawNode(n) {
+  ctx.save();
+  ctx.globalAlpha = n.available ? 1 : 0.25;
+  if (n.kind === "crystal") {
+    ctx.beginPath(); // elmas
+    ctx.moveTo(n.x, n.y - 12); ctx.lineTo(n.x + 10, n.y);
+    ctx.lineTo(n.x, n.y + 12); ctx.lineTo(n.x - 10, n.y);
+    ctx.closePath();
+    ctx.fillStyle = "#39c5cf";
+  } else {
+    ctx.beginPath(); // kütük
+    ctx.roundRect(n.x - 11, n.y - 9, 22, 18, 4);
+    ctx.fillStyle = "#ad7c4e";
+  }
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.3)";
+  ctx.stroke();
+  ctx.restore();
+
+  // Yakındaysak ipucu göster (yalnızca görsel; otorite sunucuda).
+  const self = players.find(p => p.id === me);
+  if (n.available && self && Math.hypot(n.x - self.x, n.y - self.y) <= 48) {
+    ctx.fillStyle = "#e6edf3";
+    ctx.font = "11px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText("E: topla", n.x, n.y + 26);
+  }
+}
+
+async function refreshInventory() {
+  if (!me) return;
+  try {
+    const res = await fetch(`/api/inventory?player=${encodeURIComponent(me)}`);
+    inventory = await res.json();
+  } catch {}
+}
+
+function invText() {
+  const parts = Object.entries(inventory).map(([k, n]) => `${KIND_TR[k] || k} ${n}`);
+  return parts.length ? " · çanta: " + parts.join(", ") : "";
 }
 
 function drawBubble(p) {
@@ -144,7 +194,7 @@ async function refreshChatLog() {
 
 function escapeHTML(s) {
   return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  $("hud").textContent = `tick ${tick} · ${players.length} oyuncu çevrimiçi`;
+  $("hud").textContent = `tick ${tick} · ${players.length} oyuncu çevrimiçi${invText()}`;
 }
 
 $("go").onclick = join;
