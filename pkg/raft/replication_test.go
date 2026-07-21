@@ -174,35 +174,55 @@ churn:
 	}
 
 	c.nw.Heal()
-	leader := c.waitLeader(5 * time.Second)
-	c.propose(leader, "final-marker")
 
-	// final-marker commit olduğunda ondan önceki her şey de commit'tir
-	// (log prefix garantisi). Tüm düğümler aynı diziye yakınsamalı.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		ref := c.appliedOf(c.ids[0])
-		if len(ref) > 0 && ref[len(ref)-1] == "final-marker" {
-			same := true
-			for _, id := range c.ids[1:] {
-				if fmt.Sprint(c.appliedOf(id)) != fmt.Sprint(ref) {
-					same = false
-					break
-				}
-			}
-			if same {
-				// Çift uygulama kontrolü: her komut en fazla bir kez.
-				seen := map[string]bool{}
-				for _, cmd := range ref {
-					if seen[cmd] {
-						t.Fatalf("command %q applied twice", cmd)
-					}
-					seen[cmd] = true
-				}
-				return
+	// Tek Propose commit GARANTİSİ değildir: heal'in hemen ardından
+	// "lider benim" diyen düğüm, henüz devrilmemiş bayat azınlık lideri
+	// olabilir ve kabul ettiği işaret kesilip yok olur. Bu yüzden
+	// benzersiz işaretlerle, biri her yerde uygulanana kadar yeniden
+	// öneriyoruz (6.824'ün one() yardımcısıyla aynı desen).
+	deadline := time.Now().Add(10 * time.Second)
+	for attempt := 1; time.Now().Before(deadline); attempt++ {
+		marker := fmt.Sprintf("final-%d", attempt)
+		proposed := false
+		for _, id := range c.ids {
+			if _, _, ok := c.node(id).Propose([]byte(marker)); ok {
+				proposed = true
+				break
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		if !proposed {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		// Bu işaret commit olduysa ondan önceki her şey de commit'tir
+		// (log prefix garantisi): herkes aynı, işaretle biten diziye
+		// yakınsamış olmalı.
+		settle := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(settle) {
+			ref := c.appliedOf(c.ids[0])
+			if len(ref) > 0 && ref[len(ref)-1] == marker {
+				same := true
+				for _, id := range c.ids[1:] {
+					if fmt.Sprint(c.appliedOf(id)) != fmt.Sprint(ref) {
+						same = false
+						break
+					}
+				}
+				if same {
+					// Çift uygulama kontrolü: her komut en fazla bir kez
+					// (tüm önerilen komutlar benzersiz üretildi).
+					seen := map[string]bool{}
+					for _, cmd := range ref {
+						if seen[cmd] {
+							t.Fatalf("command %q applied twice", cmd)
+						}
+						seen[cmd] = true
+					}
+					return
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	for _, id := range c.ids {
 		t.Logf("%s applied (%d): %v", id, len(c.appliedOf(id)), c.appliedOf(id))

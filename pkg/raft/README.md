@@ -81,3 +81,10 @@ Her aşamada partition testi var (sona bırakılmadı):
 - **Test kümesi = ağ modeli.** Partition'ı transport'a gömmek (ayrı
   bir test hilesi yerine) hem testleri okunur yaptı hem de Faz 3'teki
   gerçek ağ geçişinde değişmeyecek bir arayüz bıraktı.
+- **Tek Propose commit değildir — istemci de protokolün parçasıdır.**
+  Churn testinde tüm loglar mükemmel yakınsadığı halde test düştü:
+  heal'in hemen ardından yakalanan "lider", henüz devrilmemiş bayat
+  azınlık lideriydi ve kabul ettiği işaret kesilip yok oldu. Çözüm
+  istemci tarafında: benzersiz komutla, commit görünene kadar yeniden
+  öner (6.824 `one()` deseni). Gerçek sistemlerdeki karşılığı: istemci
+  retry'ları + idempotency — Faz 4'ün konusu burada kendini gösterdi.
