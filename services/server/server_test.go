@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"testing"
@@ -290,6 +291,109 @@ func TestGatherAndInventoryE2E(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("inventory read model never showed gathered wood")
+}
+
+// steerAndGather: oyuncuyu (tx,ty) hedefine yürütür, varınca toplar.
+// Snapshot'ları okuyarak sürer (yön düzeltmeli); WS'i okumak aynı
+// zamanda bağlantının yazma tamponunu boşaltır (session'ı canlı tutar).
+func steerAndGather(t *testing.T, ws *websocket.Conn, id string, tx, ty float64) {
+	t.Helper()
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		m := readMsg(t, ws)
+		if m.Type != "snapshot" {
+			continue
+		}
+		var sx, sy float64
+		found := false
+		for _, p := range m.Players {
+			if p.ID == id {
+				sx, sy, found = p.X, p.Y, true
+			}
+		}
+		if !found {
+			continue
+		}
+		dx, dy := tx-sx, ty-sy
+		if math.Hypot(dx, dy) <= 20 {
+			ws.WriteJSON(map[string]any{"type": "input"}) // dur
+			ws.WriteJSON(map[string]any{"type": "gather"})
+			return
+		}
+		ws.WriteJSON(map[string]any{"type": "input",
+			"right": dx > 4, "left": dx < -4, "down": dy > 4, "up": dy < -4})
+	}
+	t.Fatalf("player %s never reached (%.0f,%.0f)", id, tx, ty)
+}
+
+func getInventory(t *testing.T, addr, playerID string) map[string]int {
+	t.Helper()
+	resp, err := http.Get("http://" + addr + "/api/inventory?player=" + playerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var inv map[string]int
+	json.NewDecoder(resp.Body).Decode(&inv)
+	return inv
+}
+
+func waitInventory(t *testing.T, addr, playerID, kind string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if getInventory(t, addr, playerID)[kind] == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("%s/%s never reached %d (have %v)", playerID, kind, want, getInventory(t, addr, playerID))
+}
+
+// Takas dikey dilimi (tam yığın): iki oyuncu farklı kaynak toplar, biri
+// API'den takas önerir, saga çalışır, envanterler çapraz geçer.
+func TestTradeE2E(t *testing.T) {
+	srv := startTestServer(t)
+
+	idA, tokA := login(t, srv.HTTPAddr, "satıcıA")
+	idB, tokB := login(t, srv.HTTPAddr, "satıcıB")
+	wsA := dialWS(t, srv.HTTPAddr, tokA)
+	wsB := dialWS(t, srv.HTTPAddr, tokB)
+	readMsg(t, wsA) // welcome
+	readMsg(t, wsB)
+
+	// B önce kristal toplar (n4: 650,450); sonra A odun toplar (n5: 400,180).
+	// Her toplama <5s sürer, böylece diğer oturum yazma-deadline'ına takılmaz.
+	steerAndGather(t, wsB, idB, 650, 450)
+	waitInventory(t, srv.HTTPAddr, idB, "crystal", 1)
+	steerAndGather(t, wsA, idA, 400, 180)
+	waitInventory(t, srv.HTTPAddr, idA, "wood", 1)
+
+	// A teklif eder: 1 odun ver, 1 kristal iste (karşı taraf B).
+	body, _ := json.Marshal(map[string]any{
+		"counterparty": idB, "giveKind": "wood", "giveAmount": 1,
+		"wantKind": "crystal", "wantAmount": 1,
+	})
+	resp, err := http.Post("http://"+srv.HTTPAddr+"/api/trade?token="+tokA, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct{ Phase, Reason string }
+	json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if out.Phase != "settled" {
+		t.Fatalf("trade phase = %q (%s), want settled", out.Phase, out.Reason)
+	}
+
+	// Envanterler çapraz geçmeli.
+	waitInventory(t, srv.HTTPAddr, idA, "crystal", 1)
+	waitInventory(t, srv.HTTPAddr, idB, "wood", 1)
+	if got := getInventory(t, srv.HTTPAddr, idA)["wood"]; got != 0 {
+		t.Fatalf("A wood = %d, want 0 (given away)", got)
+	}
+	if got := getInventory(t, srv.HTTPAddr, idB)["crystal"]; got != 0 {
+		t.Fatalf("B crystal = %d, want 0 (given away)", got)
+	}
 }
 
 // Kimliksiz/bozuk token'la WS el sıkışması reddedilmeli.

@@ -1,26 +1,21 @@
-// Package inventory, oyuncu envanterlerinin READ MODEL'idir: inv-*
-// stream'lerindeki event'lerden (şimdilik ResourceGathered; takas
-// event'leri saga ile eklenecek) oyuncu→tür→adet sayımları türetir.
-//
-// Envanterin "gerçeği" event log'dur; bu paket yalnızca hızlı sorgu
-// için bir görünümdür ve her açılışta sıfırdan yeniden kurulur.
 package inventory
 
 import (
-	"encoding/json"
-	"log"
 	"strings"
 	"sync"
 
 	"shardlands/pkg/es"
-	"shardlands/services/world"
 )
 
+// Inventory, envanterlerin READ MODEL'idir: inv-* stream'lerindeki tüm
+// event'lerden (gather + takas hareketleri) oyuncu başına bakiye
+// türetir. Envanterin "gerçeği" event log'dur; bu paket hızlı sorgu
+// için bir görünümdür ve her açılışta sıfırdan yeniden kurulur.
 type Inventory struct {
 	store *es.Store
 
-	mu     sync.RWMutex
-	counts map[string]map[string]int // playerID → kind → adet
+	mu   sync.RWMutex
+	bals map[string]*Balance // playerID → bakiye
 
 	stop chan struct{}
 	done chan struct{}
@@ -29,10 +24,10 @@ type Inventory struct {
 // New, projection'ı başlatır (arka planda event akışını izler).
 func New(store *es.Store) *Inventory {
 	inv := &Inventory{
-		store:  store,
-		counts: map[string]map[string]int{},
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
+		store: store,
+		bals:  map[string]*Balance{},
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
 	}
 	go func() {
 		defer close(inv.done)
@@ -46,39 +41,47 @@ func (inv *Inventory) apply(evs []es.Event) {
 	defer inv.mu.Unlock()
 	for _, e := range evs {
 		if !strings.HasPrefix(e.Stream, "inv-") {
-			continue
+			continue // log paylaşımlı: bizim olmayan stream'leri atla
 		}
-		switch e.Type {
-		case world.EventResourceGathered:
-			var g world.ResourceGathered
-			if err := json.Unmarshal(e.Data, &g); err != nil {
-				log.Printf("inventory: bad event %d: %v", e.Global, err)
-				continue
-			}
-			inv.add(g.PlayerID, g.Kind, g.Amount)
+		playerID := strings.TrimPrefix(e.Stream, "inv-")
+		b := inv.bals[playerID]
+		if b == nil {
+			nb := newBalance()
+			b = &nb
+			inv.bals[playerID] = b
 		}
+		applyTo(b, e)
 	}
 }
 
-func (inv *Inventory) add(playerID, kind string, n int) {
-	m := inv.counts[playerID]
-	if m == nil {
-		m = map[string]int{}
-		inv.counts[playerID] = m
-	}
-	m[kind] += n
-	if m[kind] <= 0 {
-		delete(m, kind)
-	}
-}
-
-// Get, oyuncunun envanterinin kopyasını döner (boşsa boş map).
+// Get, oyuncunun HARCANABİLİR (available) bakiyesinin kopyasını döner.
+// Rezerve edilen mallar burada görünmez — takas askıdayken oyuncunun
+// "kullanılabilir çantası" budur.
 func (inv *Inventory) Get(playerID string) map[string]int {
 	inv.mu.RLock()
 	defer inv.mu.RUnlock()
 	out := map[string]int{}
-	for kind, n := range inv.counts[playerID] {
-		out[kind] = n
+	if b := inv.bals[playerID]; b != nil {
+		for kind, n := range b.Available {
+			if n != 0 {
+				out[kind] = n
+			}
+		}
+	}
+	return out
+}
+
+// Reserved, oyuncunun tür başına tutulan (rezerve) miktarını döner.
+func (inv *Inventory) Reserved(playerID string) map[string]int {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	out := map[string]int{}
+	if b := inv.bals[playerID]; b != nil {
+		for kind, n := range b.Reserved {
+			if n != 0 {
+				out[kind] = n
+			}
+		}
 	}
 	return out
 }

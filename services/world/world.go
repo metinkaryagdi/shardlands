@@ -26,6 +26,7 @@ import (
 
 	"shardlands/pkg/actor"
 	"shardlands/pkg/es"
+	"shardlands/services/inventory"
 )
 
 const (
@@ -49,29 +50,15 @@ const (
 const (
 	ChatStream    = "chat"
 	EventChatSaid = "ChatSaid"
-
-	EventResourceGathered = "ResourceGathered"
 )
 
-// InvStream, oyuncunun envanter aggregate'inin stream adıdır. Toplama
-// ve (Faz 2'nin devamında) takas event'leri bu stream'e yazılır —
-// envanterin tüm tarihi tek yerde.
-func InvStream(playerID string) string { return "inv-" + playerID }
-
-// ChatSaid, EventChatSaid event'inin veri şeklidir.
+// ChatSaid, EventChatSaid event'inin veri şeklidir. (Envanter/takas
+// event'leri services/inventory ve services/trade'de tanımlıdır; hareket
+// bilerek event değildir.)
 type ChatSaid struct {
 	PlayerID string `json:"playerId"`
 	Name     string `json:"name"`
 	Text     string `json:"text"`
-}
-
-// ResourceGathered, EventResourceGathered event'inin veri şeklidir.
-type ResourceGathered struct {
-	PlayerID string `json:"playerId"`
-	Name     string `json:"name"`
-	NodeID   string `json:"nodeId"`
-	Kind     string `json:"kind"` // "wood" | "crystal"
-	Amount   int    `json:"amount"`
 }
 
 // nodeLayout: hub'ın sabit kaynak yerleşimi. Deterministik sıra hem
@@ -264,11 +251,11 @@ func (h *hub) handleGather(m Gather) {
 	if h.events == nil {
 		return
 	}
-	data, _ := json.Marshal(ResourceGathered{
+	data, _ := json.Marshal(inventory.Gathered{
 		PlayerID: e.id, Name: e.name, NodeID: best.ID, Kind: best.Kind, Amount: 1,
 	})
-	if _, err := h.events.Append(InvStream(e.id), es.AnyVersion,
-		es.EventData{Type: EventResourceGathered, Data: data}); err != nil {
+	if _, err := h.events.Append(inventory.Stream(e.id), es.AnyVersion,
+		es.EventData{Type: inventory.EventGathered, Data: data}); err != nil {
 		log.Printf("world: gather event append: %v", err)
 	}
 }

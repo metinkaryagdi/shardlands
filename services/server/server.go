@@ -25,6 +25,7 @@ import (
 	"shardlands/services/inventory"
 	"shardlands/services/matchmaking"
 	"shardlands/services/player"
+	"shardlands/services/trade"
 	"shardlands/services/world"
 )
 
@@ -86,6 +87,7 @@ func Start(cfg Config) (*Server, error) {
 	s.events = events
 	s.chatHist = chat.NewHistory(events)
 	s.inv = inventory.New(events)
+	trades := trade.NewOrchestrator(events)
 
 	// Dünya: aktör + dış tick zamanlayıcısı.
 	s.system = actor.NewSystem("shardlands")
@@ -122,6 +124,7 @@ func Start(cfg Config) (*Server, error) {
 		Players:   pb.NewPlayerServiceClient(playerConn),
 		Chat:      s.chatHist,
 		Inventory: s.inv,
+		Trades:    trades,
 	})}
 	go s.httpSrv.Serve(httpLis)
 

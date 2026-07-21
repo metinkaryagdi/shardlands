@@ -9,6 +9,7 @@ import (
 
 	"shardlands/pkg/actor"
 	"shardlands/pkg/es"
+	"shardlands/services/inventory"
 	"shardlands/services/world"
 )
 
@@ -211,7 +212,7 @@ func TestGatherDepleteAndRespawn(t *testing.T) {
 	// Merkezden (400,300) uzaktaki node menzil dışı: toplama sessizce
 	// başarısız olmalı (n5 (400,180) 120px uzakta, menzil 48).
 	w.Send(world.Gather{PlayerID: "p1"})
-	if evs, _ := store.ReadStream(world.InvStream("p1"), 0, 0); len(evs) != 0 {
+	if evs, _ := store.ReadStream(inventory.Stream("p1"), 0, 0); len(evs) != 0 {
 		t.Fatalf("out-of-range gather appended %d events", len(evs))
 	}
 
@@ -239,14 +240,14 @@ func TestGatherDepleteAndRespawn(t *testing.T) {
 		t.Fatal("gathered node must be depleted in snapshot")
 	}
 
-	evs, err := store.ReadStream(world.InvStream("p1"), 0, 0)
+	evs, err := store.ReadStream(inventory.Stream("p1"), 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(evs) != 1 || evs[0].Type != world.EventResourceGathered {
+	if len(evs) != 1 || evs[0].Type != inventory.EventGathered {
 		t.Fatalf("inv events = %+v, want 1 ResourceGathered", evs)
 	}
-	var g world.ResourceGathered
+	var g inventory.Gathered
 	json.Unmarshal(evs[0].Data, &g)
 	if g.NodeID != "n5" || g.Kind != "wood" || g.Amount != 1 || g.PlayerID != "p1" {
 		t.Fatalf("event data = %+v", g)
@@ -254,7 +255,7 @@ func TestGatherDepleteAndRespawn(t *testing.T) {
 
 	// Tükenmiş node tekrar toplanamaz.
 	w.Send(world.Gather{PlayerID: "p1"})
-	if evs, _ := store.ReadStream(world.InvStream("p1"), 0, 0); len(evs) != 1 {
+	if evs, _ := store.ReadStream(inventory.Stream("p1"), 0, 0); len(evs) != 1 {
 		t.Fatalf("depleted node re-gathered: %d events", len(evs))
 	}
 
@@ -272,7 +273,7 @@ func TestGatherDepleteAndRespawn(t *testing.T) {
 	w.Send(world.Gather{PlayerID: "p1"})
 	w.Send(world.Tick{}) // aktörün Gather'ı işlediğinden emin ol (senkron noktası)
 	nextSnap(t, ch1)
-	if evs, _ := store.ReadStream(world.InvStream("p1"), 0, 0); len(evs) != 2 {
+	if evs, _ := store.ReadStream(inventory.Stream("p1"), 0, 0); len(evs) != 2 {
 		t.Fatalf("respawned node not gatherable: %d events, want 2", len(evs))
 	}
 }

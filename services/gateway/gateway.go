@@ -16,6 +16,8 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -27,6 +29,7 @@ import (
 	"shardlands/pkg/auth"
 	"shardlands/services/chat"
 	"shardlands/services/inventory"
+	"shardlands/services/trade"
 	"shardlands/services/world"
 )
 
@@ -38,11 +41,13 @@ type Config struct {
 	Players   pb.PlayerServiceClient
 	Chat      *chat.History        // sohbet read model'i (sorgu tarafı)
 	Inventory *inventory.Inventory // envanter read model'i
+	Trades    *trade.Orchestrator  // takas saga koordinatörü
 }
 
 type Gateway struct {
 	cfg      Config
 	upgrader websocket.Upgrader
+	tradeSeq atomic.Int64
 }
 
 // New, gateway'in http.Handler'ını kurar.
@@ -52,9 +57,21 @@ func New(cfg Config) http.Handler {
 	mux.HandleFunc("POST /api/login", g.handleLogin)
 	mux.HandleFunc("GET /api/chat/recent", g.handleChatRecent)
 	mux.HandleFunc("GET /api/inventory", g.handleInventory)
+	mux.HandleFunc("POST /api/trade", g.handleTrade)
 	mux.HandleFunc("GET /ws", g.handleWS)
-	mux.Handle("/", http.FileServer(http.Dir(cfg.ClientDir)))
+	mux.Handle("/", noCache(http.FileServer(http.Dir(cfg.ClientDir))))
 	return mux
+}
+
+// noCache, statik istemci dosyalarına no-cache başlığı ekler. Faz 1/2
+// geliştirmesinde tarayıcının index.html'in eski bir sürümünü önbellekten
+// servis etmesi (canlı doğrulamada başımıza geldi) böyle önlenir; üretimde
+// varlık sürümleme (content hash) tercih edilir.
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handleChatRecent: CQRS sorgu tarafı — event log'a değil read model'e
@@ -104,6 +121,52 @@ func (g *Gateway) handleInventory(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(g.cfg.Inventory.Get(playerID))
+}
+
+// handleTrade: takas teklifini orkestratöre verir. Proposer, token'dan
+// (kimlik doğrulanmış oyuncu) gelir; counterparty ve mallar gövdeden.
+// Canlı yolda karşı taraf otomatik kabul eder (AutoAccept) — gerçek onay
+// UX'i (karşı tarafın istemcisinde "kabul et" akışı) kapsam dışı.
+func (g *Gateway) handleTrade(w http.ResponseWriter, r *http.Request) {
+	claims, err := auth.Verify(g.cfg.Secret, r.URL.Query().Get("token"))
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		Counterparty string `json:"counterparty"`
+		GiveKind     string `json:"giveKind"`
+		GiveAmount   int    `json:"giveAmount"`
+		WantKind     string `json:"wantKind"`
+		WantAmount   int    `json:"wantAmount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	offer := trade.Offer{
+		ID:           g.newTradeID(),
+		Proposer:     claims.Sub,
+		Counterparty: body.Counterparty,
+		Give:         trade.Item{Kind: body.GiveKind, Amount: body.GiveAmount},
+		Want:         trade.Item{Kind: body.WantKind, Amount: body.WantAmount},
+	}
+	st, err := g.cfg.Trades.Execute(offer, trade.AutoAccept)
+	if err != nil {
+		log.Printf("gateway: trade execute: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"id":     offer.ID,
+		"phase":  st.Phase.String(),
+		"reason": st.Reason,
+	})
+}
+
+func (g *Gateway) newTradeID() string {
+	return "t" + strconv.FormatInt(g.tradeSeq.Add(1), 10)
 }
 
 // ---- WebSocket + session aktörü ----

@@ -15,6 +15,10 @@
   button { cursor: pointer; background: #1f6feb; border-color: #1f6feb; color: white; }
   canvas { border: 1px solid #30363d; border-radius: 8px; background: #10151c; }
   #hud { font-size: 13px; color: #8b949e; min-height: 1em; }
+  #trade { display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+           font-size: 13px; width: 780px; }
+  #trade[hidden] { display: none; } /* hidden, inline display'i ezmesin */
+  #trade select, #trade input, #trade button { padding: 4px 6px; }
 </style>
 </head>
 <body>
@@ -27,6 +31,18 @@
 <input id="chat" placeholder="mesaj yaz — Enter ile gönder" maxlength="120" hidden
        style="width: 780px;">
 <div id="chatlog" style="font-size: 13px; color: #8b949e; width: 780px; min-height: 4.5em;"></div>
+<div id="trade" hidden>
+  <span style="color:#8b949e;">takas:</span> ver
+  <select id="giveKind"><option value="wood">odun</option><option value="crystal">kristal</option></select>
+  <input id="giveAmt" type="number" min="1" value="1" style="width:52px;">
+  → al
+  <select id="wantKind"><option value="crystal">kristal</option><option value="wood">odun</option></select>
+  <input id="wantAmt" type="number" min="1" value="1" style="width:52px;">
+  ile
+  <select id="partner"></select>
+  <button id="offer">Teklif Et</button>
+  <span id="tradeMsg" style="color:#8b949e;"></span>
+</div>
 <div id="hud"></div>
 <script>
 "use strict";
@@ -53,9 +69,31 @@ async function join() {
     $("login").hidden = true;
     canvas.hidden = false;
     $("chat").hidden = false;
-    $("hud").textContent = "bağlandı — WASD / ok tuşları · sohbet için alandaki kutu";
+    $("trade").hidden = false;
+    $("hud").textContent = "bağlandı — WASD/oklar · E: topla · sohbet kutusu · takas paneli";
     refreshChatLog();
     setInterval(refreshChatLog, 5000);
+  };
+
+  // Takas: kimlik doğrulanmış oyuncu (bu token) teklif verir; sunucudaki
+  // saga orkestratörü rezerve → (auto-accept) → çapraz transfer yapar.
+  $("offer").onclick = async () => {
+    const partner = $("partner").value;
+    if (!partner) { $("tradeMsg").textContent = "yakında oyuncu yok"; return; }
+    $("tradeMsg").textContent = "işleniyor…";
+    try {
+      const res = await fetch(`/api/trade?token=${encodeURIComponent(token)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          counterparty: partner,
+          giveKind: $("giveKind").value, giveAmount: +$("giveAmt").value,
+          wantKind: $("wantKind").value, wantAmount: +$("wantAmt").value,
+        }),
+      });
+      const r = await res.json();
+      $("tradeMsg").textContent = r.phase === "settled" ? "✓ takas tamam" : `✗ ${r.reason || r.phase}`;
+      refreshInventory();
+    } catch (e) { $("tradeMsg").textContent = "hata"; }
   };
   ws.onclose = () => { $("hud").textContent = "bağlantı koptu"; };
   ws.onmessage = ev => {
@@ -192,9 +230,21 @@ async function refreshChatLog() {
   } catch {}
 }
 
+function refreshPartners() {
+  const sel = $("partner");
+  const others = players.filter(p => p.id !== me);
+  const wanted = others.map(p => `${p.id} ${p.name}`).join("|");
+  if (sel.dataset.sig === wanted) return; // değişmediyse dokunma (seçim korunur)
+  sel.dataset.sig = wanted;
+  const prev = sel.value;
+  sel.innerHTML = others.map(p => `<option value="${p.id}">${escapeHTML(p.name)}</option>`).join("");
+  if (others.some(p => p.id === prev)) sel.value = prev;
+}
+
 function escapeHTML(s) {
   return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   $("hud").textContent = `tick ${tick} · ${players.length} oyuncu çevrimiçi${invText()}`;
+  refreshPartners();
 }
 
 $("go").onclick = join;
