@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Shardlands</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0d1117; color: #c9d1d9;
+         font-family: system-ui, sans-serif; display: flex;
+         flex-direction: column; align-items: center; gap: 12px; padding: 24px; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: 2px; }
+  #login { display: flex; gap: 8px; }
+  input, button { font-size: 16px; padding: 8px 12px; border-radius: 6px;
+                  border: 1px solid #30363d; background: #161b22; color: inherit; }
+  button { cursor: pointer; background: #1f6feb; border-color: #1f6feb; color: white; }
+  canvas { border: 1px solid #30363d; border-radius: 8px; background: #10151c; }
+  #hud { font-size: 13px; color: #8b949e; min-height: 1em; }
+</style>
+</head>
+<body>
+<h1>SHARDLANDS</h1>
+<div id="login">
+  <input id="name" placeholder="isim" maxlength="24" autofocus>
+  <button id="go">Hub'a Katıl</button>
+</div>
+<canvas id="c" width="800" height="600" hidden></canvas>
+<div id="hud"></div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const canvas = $("c"), ctx = canvas.getContext("2d");
+let me = null, players = [], tick = 0;
+
+async function join() {
+  const name = $("name").value.trim();
+  if (!name) return;
+  const res = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) { $("hud").textContent = "giriş hatası: " + await res.text(); return; }
+  const { playerId, token } = await res.json();
+
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+
+  ws.onopen = () => {
+    $("login").hidden = true;
+    canvas.hidden = false;
+    $("hud").textContent = "bağlandı — WASD / ok tuşları";
+  };
+  ws.onclose = () => { $("hud").textContent = "bağlantı koptu"; };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "welcome") { me = m.id; }
+    else if (m.type === "snapshot") { tick = m.tick; players = m.players; draw(); }
+  };
+
+  // Girdi: basılı tuş DURUMU gönderilir (pozisyon değil — sunucu
+  // otoriter). Yalnızca durum değişince mesaj çıkar.
+  const keys = { up: false, down: false, left: false, right: false };
+  const map = { KeyW: "up", ArrowUp: "up", KeyS: "down", ArrowDown: "down",
+                KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right" };
+  const setKey = (code, val) => {
+    const k = map[code];
+    if (!k || keys[k] === val) return;
+    keys[k] = val;
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", ...keys }));
+  };
+  addEventListener("keydown", e => { if (map[e.code]) { e.preventDefault(); setKey(e.code, true); } });
+  addEventListener("keyup",   e => { if (map[e.code]) { e.preventDefault(); setKey(e.code, false); } });
+  addEventListener("blur", () => { for (const k in keys) keys[k] = false;
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", ...keys })); });
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // zemin ızgarası
+  ctx.strokeStyle = "rgba(139,148,158,0.08)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= canvas.width; x += 50) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+  }
+  for (let y = 0; y <= canvas.height; y += 50) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+  }
+  for (const p of players) {
+    const self = p.id === me;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 14, 0, Math.PI * 2);
+    ctx.fillStyle = self ? "#1f6feb" : "#3fb950";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.stroke();
+    ctx.fillStyle = "#c9d1d9";
+    ctx.font = "12px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(p.name, p.x, p.y - 22);
+  }
+  $("hud").textContent = `tick ${tick} · ${players.length} oyuncu çevrimiçi`;
+}
+
+$("go").onclick = join;
+$("name").addEventListener("keydown", e => { if (e.key === "Enter") join(); });
+</script>
+</body>
+</html>

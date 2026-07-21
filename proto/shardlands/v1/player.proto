@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package shardlands.v1;
+
+option go_package = "shardlands/gen/shardlands/v1;shardlandsv1";
+
+// PlayerService: kimlik ve oyuncu kayıtları. Faz 1'de in-memory;
+// Faz 2'de event-sourced hale gelecek.
+service PlayerService {
+  // CreatePlayer, isimden oyuncu yaratır ve oturum token'ı (JWT) döner.
+  rpc CreatePlayer(CreatePlayerRequest) returns (CreatePlayerResponse);
+  rpc GetPlayer(GetPlayerRequest) returns (GetPlayerResponse);
+}
+
+message CreatePlayerRequest {
+  string name = 1;
+}
+
+message CreatePlayerResponse {
+  string player_id = 1;
+  string token = 2;
+}
+
+message GetPlayerRequest {
+  string player_id = 1;
+}
+
+message GetPlayerResponse {
+  Player player = 1;
+}
+
+message Player {
+  string player_id = 1;
+  string name = 2;
+  int64 created_at_unix = 3;
+}

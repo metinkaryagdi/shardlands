@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package shardlands.v1;
+
+option go_package = "shardlands/gen/shardlands/v1;shardlandsv1";
+
+// MatchmakingService: Faz 1'de yalnızca kuyruk iskeleti. Maç yaratma
+// (saga ile arena provision) Faz 5'in konusu.
+service MatchmakingService {
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);
+}
+
+message EnqueueRequest {
+  string player_id = 1;
+  string mode = 2; // "1v1" | "2v2"
+}
+
+message EnqueueResponse {
+  // Kuyruktaki sıra (1 tabanlı). Faz 1'de maç hiç oluşmaz.
+  int32 position = 1;
+}

@@ -14,9 +14,12 @@ pkg/ringbuf/   Faz 0: lock-free MPSC ring buffer                       ✅
 pkg/storage/   Faz 0: LSM-tree storage engine                          ✅
 pkg/raft/      Faz 0: Raft konsensüs                                   ✅
 pkg/clock/     Faz 0: Lamport / vector clock                           ✅
-services/      Faz 1+: gateway, player, world, matchmaking             ⬜
+pkg/auth/      Faz 1: minimal HS256 JWT (stdlib)                       ✅
+proto/         Faz 1: gRPC/Protobuf kontratları (buf ile codegen)      ✅
+gen/           Üretilen Go kodu (commit'li — araçsız build için)       ✅
+services/      Faz 1+: gateway, player, world, matchmaking, server     ✅
 operator/      Faz 5: arena instance Kubernetes operator'ü             ⬜
-client/        HTML5 Canvas + vanilla JS istemci                       ⬜
+client/        HTML5 Canvas + vanilla JS istemci                       ✅
 ```
 
 ## Faz 0 — Temel Yapı Taşları ✅ (tag: `faz0`)
@@ -62,8 +65,43 @@ graph TD
     end
 ```
 
+## Faz 1 — Çekirdek İskelet, Tek Node (devam ediyor)
+
+Monolit prototip: tüm servisler TEK süreçte ama GERÇEK ağ sınırlarıyla
+(player/matchmaking ayrı TCP portlarında gRPC, gateway gerçek gRPC
+istemcisi). Faz 4'teki strangler-fig anlatısının "önce" hali.
+
+```mermaid
+graph LR
+    C1[sekme 1] -- "WS (JSON)" --> GW[gateway / BFF]
+    C2[sekme 2] -- "WS (JSON)" --> GW
+    GW -- gRPC --> P[player-service<br/>kimlik + JWT basımı]
+    GW -- gRPC --> MM[matchmaking-service<br/>kuyruk iskeleti]
+    GW -- "aktör mesajları<br/>(session aktörleri)" --> W[world aktörü<br/>hub simülasyonu]
+    T[["tick 20Hz"]] --> W
+```
+
+- **Kimlik:** `POST /api/login` → player-service oyuncu yaratır, HS256
+  JWT basar ([pkg/auth](pkg/auth/jwt.go)); gateway WS el sıkışmasında doğrular.
+- **Session'lar:** her WS bağlantısı bir aktör; WS yazmaları aktör
+  goroutine'inden (gorilla "tek yazar" kuralı bedavaya), yavaş istemcide
+  kare düşer (DropNewest) — dünya asla beklemez.
+- **Hareket:** sunucu-otoriter; istemci yalnızca basılı tuş durumunu
+  gönderir, dünya 20Hz tick'te fiziği işler ve tam snapshot yayınlar
+  (delta/AOI Faz 5).
+- **E2E dilim:** "iki sekme birbirinin hareketini görür" hem otomatik
+  testte ([server_test.go](services/server/server_test.go)) hem canlı
+  tarayıcıda doğrulandı.
+
 ## Çalıştırma
 
 ```powershell
-go test -race ./...
+go run ./cmd/server        # http://localhost:8080 — iki sekme aç
+go test -race ./...        # tüm testler
 ```
+
+Proto codegen (kontrat değişince): `buf generate` — araçlar:
+`go install github.com/bufbuild/buf/cmd/buf@latest`,
+`google.golang.org/protobuf/cmd/protoc-gen-go@latest`,
+`google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`.
+Üretilen kod `gen/` altında commit'lidir (araçsız `go build` çalışsın diye).
