@@ -286,7 +286,7 @@ type clientMsg struct {
 // framework'ünde ask deseni yok (Faz 1'de bilinçli olarak ertelendi),
 // bu yüzden yanıt kanalı mesajın içinde gelir.
 type enterArenaMsg struct {
-	a     *arena.Arena
+	link  arenaLink
 	team  int
 	token uint64
 	reply chan error
@@ -394,8 +394,9 @@ type session struct {
 	shard    string
 	id, name string
 
-	// Arena modu: doluysa oyuncu hub'da DEĞİL, arenadadır.
-	arena *arena.Arena
+	// Arena modu: doluysa oyuncu hub'da DEĞİL, arenadadır. Yerel
+	// instance da olabilir, uzak Pod bağlantısı da (bkz. arenalink.go).
+	arena arenaLink
 	team  int
 	// token, son uygulanan handoff'un fencing token'ı. Daha küçük
 	// token'lı emir REDDEDİLİR (gecikmiş/bayat transfer).
@@ -508,9 +509,12 @@ func (s *session) onEnterArena(ctx *actor.Context, m enterArenaMsg) {
 	if s.region != nil {
 		ctx.Send(s.region, world.Leave{PlayerID: s.id})
 	}
-	s.arena, s.team = m.a, m.team
+	if s.arena != nil {
+		s.arena.Close() // eski bağlantı varsa bırak
+	}
+	s.arena, s.team = m.link, m.team
 	s.write(ctx, map[string]any{
-		"type": "arena-enter", "arenaId": m.a.ID(), "mode": string(m.a.Mode()),
+		"type": "arena-enter", "arenaId": m.link.ID(), "mode": m.link.Mode(),
 		"team": m.team, "w": arena.Width, "h": arena.Height, "tickRate": arena.TickRate,
 	})
 	m.reply <- nil
@@ -523,6 +527,9 @@ func (s *session) onEnterHub(ctx *actor.Context, m enterHubMsg) {
 		return
 	}
 	s.token = m.token
+	if s.arena != nil {
+		s.arena.Close() // uzak akışı kapat (yerelde no-op)
+	}
 	s.arena, s.team = nil, 0
 
 	rid, shard, ref := s.router.SpawnRegion(world.Width/2, world.Height/2)
@@ -542,6 +549,7 @@ func (s *session) PostStop(ctx *actor.Context) {
 	if s.arena != nil {
 		// Arenadayken kopan bağlantı: oyuncu elenir (maç askıda kalmasın).
 		s.arena.Push(arena.Command{PlayerID: s.id, Kind: arena.CmdLeave})
+		s.arena.Close()
 	}
 	if s.region != nil {
 		ctx.Send(s.region, world.Leave{PlayerID: s.id})
@@ -572,14 +580,20 @@ func ask(ref *actor.Ref, send func(chan error), timeout time.Duration) error {
 	}
 }
 
-// EnterArena, handoff.SessionPort.
-func (g *Gateway) EnterArena(playerID string, a *arena.Arena, team int, token uint64) error {
+// EnterArena, handoff.SessionPort. Handle yerel instance ya da uzak
+// Pod bağlantısı olabilir; oturum ayırt etmez.
+func (g *Gateway) EnterArena(playerID string, h handoff.ArenaHandle, team int, token uint64) error {
+	link, ok := h.(arenaLink)
+	if !ok {
+		return fmt.Errorf("gateway: unsupported arena handle %T", h)
+	}
 	ref := g.sessionRef(playerID)
 	if ref == nil {
+		link.Close()
 		return fmt.Errorf("gateway: session %s not connected", playerID)
 	}
 	return ask(ref, func(reply chan error) {
-		ref.Send(enterArenaMsg{a: a, team: team, token: token, reply: reply})
+		ref.Send(enterArenaMsg{link: link, team: team, token: token, reply: reply})
 	}, 3*time.Second)
 }
 
@@ -595,11 +609,31 @@ func (g *Gateway) EnterHub(playerID string, token uint64) error {
 }
 
 // Assign, matchmaking.Assigner: eşleşen oyuncuyu handoff ile arenaya al.
+// Arena bu süreçte de olabilir (LocalProvisioner), bir Pod'da da
+// (K8sProvisioner) — ikinci durumda gateway arena Pod'una gRPC akışı
+// açar ve komutları VEKİL EDER (BFF tek kapı olarak kalır).
 func (g *Gateway) Assign(playerID string, h *matchmaking.Handle, team int) error {
-	if h == nil || h.Arena == nil {
-		return errors.New("gateway: remote arena handles not supported yet")
+	if h == nil {
+		return errors.New("gateway: nil arena handle")
 	}
-	return g.cfg.Handoff.ToArena(playerID, h.Arena, team)
+	var link arenaLink
+	switch {
+	case h.Arena != nil:
+		link = localLink{a: h.Arena}
+	case h.Endpoint != "":
+		ref := g.sessionRef(playerID)
+		if ref == nil {
+			return fmt.Errorf("gateway: session %s not connected", playerID)
+		}
+		rl, err := dialRemoteArena(h.Endpoint, h.ID, h.Mode, playerID, ref)
+		if err != nil {
+			return err
+		}
+		link = rl
+	default:
+		return errors.New("gateway: handle has neither local arena nor endpoint")
+	}
+	return g.cfg.Handoff.ToArena(playerID, link, team)
 }
 
 // Release, matchmaking.Assigner telafisi / maç sonu: oyuncuyu hub'a döndür.

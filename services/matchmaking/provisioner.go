@@ -23,8 +23,9 @@ type ArenaSpec struct {
 // instance; uzak sağlayıcıda yalnız kimlik ve adres dolu olur.
 type Handle struct {
 	ID       string
+	Mode     string       // "1v1" | "2v2"
 	Arena    *arena.Arena // yalnız yerel sağlayıcıda
-	Endpoint string       // uzak sağlayıcıda (Faz 5 operator)
+	Endpoint string       // uzak sağlayıcıda (arena Pod'unun adresi)
 }
 
 // Provisioner, arena instance'ı yaratıp yok eden bileşendir. Saga bu
@@ -60,7 +61,7 @@ func (p *LocalProvisioner) Provision(_ context.Context, spec ArenaSpec) (*Handle
 	p.mu.Unlock()
 
 	a.Run()
-	return &Handle{ID: spec.ID, Arena: a}, nil
+	return &Handle{ID: spec.ID, Mode: string(spec.Mode), Arena: a}, nil
 }
 
 // Destroy, arenayı durdurur. İdempotenttir: olmayan arenayı yok etmek

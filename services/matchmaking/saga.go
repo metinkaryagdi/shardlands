@@ -185,6 +185,13 @@ func (m *Matcher) formLocked(mode string) *match {
 	return mt
 }
 
+// actorSink, arena snapshot'larını oturum aktörüne taşıyan adaptördür.
+// Ref.Send bloklamaz (DropNewest mailbox), bu yüzden tick döngüsünü
+// yavaşlatmaz.
+type actorSink struct{ ref *actor.Ref }
+
+func (s actorSink) Deliver(snap arena.Snapshot) { s.ref.Send(snap) }
+
 type match struct {
 	id      string
 	mode    string
@@ -209,7 +216,11 @@ func (m *Matcher) runSaga(mt match) {
 
 	specs := make([]arena.PlayerSpec, len(mt.players))
 	for i, p := range mt.players {
-		specs[i] = arena.PlayerSpec{ID: p.ID, Name: p.Name, Team: mt.teams[i], Session: p.Session}
+		spec := arena.PlayerSpec{ID: p.ID, Name: p.Name, Team: mt.teams[i]}
+		if p.Session != nil {
+			spec.Sink = actorSink{ref: p.Session}
+		}
+		specs[i] = spec
 	}
 
 	// Adım 1: provision.

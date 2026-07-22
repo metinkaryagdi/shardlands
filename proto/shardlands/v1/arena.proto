@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package shardlands.v1;
+
+option go_package = "shardlands/gen/shardlands/v1;shardlandsv1";
+
+// ArenaService, bir arena instance'ının (Pod) oyun protokolüdür.
+// Gateway, oyuncunun WS bağlantısını KENDİ tutar ve komutları buraya
+// vekil eder; kareler ters yönde akar. Böylece istemci sözleşmesi
+// değişmez ve iç hop (gateway→arena) service mesh'in koruyabileceği
+// normal bir gRPC çağrısı olur.
+service ArenaService {
+  // Play, oyuncu başına çift yönlü akıştır: ilk mesaj Join olmalıdır.
+  rpc Play(stream PlayRequest) returns (stream PlayResponse);
+}
+
+message PlayRequest {
+  oneof msg {
+    JoinArena join = 1;
+    ArenaCommand command = 2;
+  }
+}
+
+message JoinArena {
+  string player_id = 1;
+}
+
+// ArenaCommand, services/arena.Command'in tel karşılığı.
+message ArenaCommand {
+  // kind: 0=move, 1=fire, 2=leave
+  int32 kind = 1;
+  bool up = 2;
+  bool down = 3;
+  bool left = 4;
+  bool right = 5;
+  double aim_x = 6;
+  double aim_y = 7;
+}
+
+message PlayResponse {
+  ArenaSnapshot snapshot = 1;
+}
+
+message ArenaSnapshot {
+  string arena_id = 1;
+  uint64 tick = 2;
+  int64 remaining_ms = 3;
+  repeated ArenaPlayerState players = 4;
+  repeated ArenaProjectile projectiles = 5;
+  bool over = 6;
+  int32 winner_team = 7;
+}
+
+message ArenaPlayerState {
+  string id = 1;
+  string name = 2;
+  int32 team = 3;
+  double x = 4;
+  double y = 5;
+  int32 health = 6;
+  bool alive = 7;
+}
+
+message ArenaProjectile {
+  uint64 id = 1;
+  int32 team = 2;
+  double x = 3;
+  double y = 4;
+}

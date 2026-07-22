@@ -24,7 +24,7 @@ type fakePort struct {
 	failWith   error
 }
 
-func (p *fakePort) EnterArena(_ string, _ *arena.Arena, _ int, token uint64) error {
+func (p *fakePort) EnterArena(_ string, _ ArenaHandle, _ int, token uint64) error {
 	p.mu.Lock()
 	fail, block, blocked := p.failWith, p.block, p.blocked
 	p.mu.Unlock()

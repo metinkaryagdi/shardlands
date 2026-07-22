@@ -22,7 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"shardlands/pkg/actor"
 	"shardlands/pkg/ringbuf"
 )
 
@@ -86,12 +85,23 @@ type Command struct {
 	AimX, AimY            float64 // CmdFire: nişan yönü
 }
 
+// Sink, bir oyuncuya snapshot teslim eden alıcıdır. İki gerçekleşme:
+// yerel yolda oturum aktörüne mesaj gönderen adaptör, uzak yolda
+// (arena Pod'u) gRPC akışına yazan adaptör. Arena böylece aktör
+// framework'üne bağımlı değildir — Pod binary'si onu taşımaz.
+//
+// Deliver BLOKLAMAMALIDIR: tick döngüsünü yavaşlatır. Yavaş alıcı
+// kareyi düşürmelidir (arena profili: eskimiş kareyi beklemek yerine at).
+type Sink interface {
+	Deliver(Snapshot)
+}
+
 // PlayerSpec, arenaya girecek oyuncunun tanımı.
 type PlayerSpec struct {
-	ID      string
-	Name    string
-	Team    int        // 0 veya 1
-	Session *actor.Ref // snapshot'ların gideceği yer (nil olabilir)
+	ID   string
+	Name string
+	Team int  // 0 veya 1
+	Sink Sink // snapshot alıcısı (nil olabilir; sonradan SetSink ile de bağlanır)
 }
 
 // PlayerState, istemciye görünen oyuncu.
@@ -173,6 +183,7 @@ type Arena struct {
 	mu       sync.RWMutex
 	snapshot Snapshot
 	result   *Result
+	sinks    map[string]Sink // playerID → snapshot alıcısı
 
 	dropped atomic.Int64
 
@@ -196,6 +207,7 @@ func New(id string, mode Mode, specs []PlayerSpec, opts Options) *Arena {
 		mode:   mode,
 		inputs: ringbuf.New[Command](inputCapacity),
 		byID:   map[string]*player{},
+		sinks:  map[string]Sink{},
 		onEnd:  opts.OnEnd,
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
@@ -209,6 +221,9 @@ func New(id string, mode Mode, specs []PlayerSpec, opts Options) *Arena {
 		p.x, p.y = spawnPos(s.Team, idx)
 		a.players = append(a.players, p)
 		a.byID[s.ID] = p
+		if s.Sink != nil {
+			a.sinks[s.ID] = s.Sink
+		}
 	}
 	sort.Slice(a.players, func(i, j int) bool { return a.players[i].ID < a.players[j].ID })
 	a.publish()
@@ -491,15 +506,37 @@ func (a *Arena) publishWith(over bool, winner int) {
 		})
 	}
 
+	// Alıcıları kilit ALTINDA kopyala, teslimi kilit DIŞINDA yap:
+	// Deliver'ın yavaşlığı tick döngüsünü ve okuyucuları kilitlemesin.
 	a.mu.Lock()
 	a.snapshot = snap
+	sinks := make([]Sink, 0, len(a.sinks))
+	for _, s := range a.sinks {
+		sinks = append(sinks, s)
+	}
 	a.mu.Unlock()
 
-	for _, p := range a.players {
-		if p.Session != nil {
-			p.Session.Send(snap)
-		}
+	for _, s := range sinks {
+		s.Deliver(snap)
 	}
+}
+
+// SetSink, oyuncunun snapshot alıcısını (yeniden) bağlar. Uzak arenada
+// oyuncular arena kurulduktan SONRA bağlandığı için gereklidir.
+func (a *Arena) SetSink(playerID string, s Sink) {
+	a.mu.Lock()
+	if s == nil {
+		delete(a.sinks, playerID)
+	} else {
+		a.sinks[playerID] = s
+	}
+	a.mu.Unlock()
+}
+
+// HasPlayer, oyuncunun bu arenaya ait olup olmadığı.
+func (a *Arena) HasPlayer(playerID string) bool {
+	_, ok := a.byID[playerID]
+	return ok
 }
 
 func remainingMs(tick uint64) int64 {

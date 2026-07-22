@@ -44,6 +44,10 @@ type Config struct {
 	DataDir         string   // event store'un yaşadığı dizin
 	Shards          []string // shard node id'leri (boşsa iki node varsayılan)
 	ShardReplicas   int      // shard başına Raft replikası (boşsa 3)
+	// Provisioner, arena sağlayıcısı. Boşsa arenalar BU süreçte açılır
+	// (LocalProvisioner). Kubernetes kurulumunda K8sProvisioner geçilir;
+	// gateway uzak arenaya gRPC ile vekil eder.
+	Provisioner matchmaking.Provisioner
 }
 
 type Server struct {
@@ -109,8 +113,12 @@ func Start(cfg Config) (*Server, error) {
 	// Matchmaking: eşleştirici + yerel arena sağlayıcı. Event store
 	// hazır olduğu için saga'nın denetim izi (match-* stream'leri)
 	// baştan yazılır. Assigner Faz 5'in handoff adımında bağlanacak.
-	s.provisioner = matchmaking.NewLocalProvisioner()
-	s.matcher = matchmaking.NewMatcher(events, s.provisioner, nil)
+	prov := cfg.Provisioner
+	if prov == nil {
+		s.provisioner = matchmaking.NewLocalProvisioner()
+		prov = s.provisioner
+	}
+	s.matcher = matchmaking.NewMatcher(events, prov, nil)
 	if _, err := s.serveGRPC(cfg.MatchmakingAddr, func(gs *grpc.Server) {
 		pb.RegisterMatchmakingServiceServer(gs, matchmaking.New(s.matcher))
 	}); err != nil {

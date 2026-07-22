@@ -27,7 +27,6 @@ import (
 
 	"shardlands/pkg/dlock"
 	"shardlands/pkg/es"
-	"shardlands/services/arena"
 )
 
 // Denetim izi event tipleri.
@@ -54,11 +53,19 @@ type Record struct {
 // ErrBusy: oyuncu için başka bir transfer sürüyor (kilit alınamadı).
 var ErrBusy = errors.New("handoff: player transfer already in progress")
 
+// ArenaHandle, transfer edilen arenanın tutamacıdır. Yalnız kimlik
+// gerekir: arena BU SÜREÇTE bir instance da olabilir, uzak bir Pod'a
+// açılmış bir bağlantı da. Koordinatör ikisini ayırt etmez — Faz 6'da
+// uzak arena eklenirken bu arayüz sayesinde handoff mantığı değişmedi.
+type ArenaHandle interface {
+	ID() string
+}
+
 // SessionPort, oturuma transfer emri veren arayüzdür (gateway uygular).
 // token, fencing için taşınır: oturum gördüğünden küçük token'ı
 // reddetmelidir.
 type SessionPort interface {
-	EnterArena(playerID string, a *arena.Arena, team int, token uint64) error
+	EnterArena(playerID string, h ArenaHandle, team int, token uint64) error
 	EnterHub(playerID string, token uint64) error
 }
 
@@ -107,7 +114,7 @@ func (c *Coordinator) acquire(playerID string) (uint64, func(), error) {
 }
 
 // ToArena, oyuncuyu hub'dan arenaya taşır.
-func (c *Coordinator) ToArena(playerID string, a *arena.Arena, team int) error {
+func (c *Coordinator) ToArena(playerID string, a ArenaHandle, team int) error {
 	token, release, err := c.acquire(playerID)
 	if err != nil {
 		c.audit(playerID, EventHandoffFailed, Record{PlayerID: playerID, Reason: err.Error()})

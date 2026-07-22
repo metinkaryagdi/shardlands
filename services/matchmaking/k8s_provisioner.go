@@ -88,7 +88,7 @@ func (p *K8sProvisioner) Provision(ctx context.Context, spec ArenaSpec) (*Handle
 		switch got.Status.Phase {
 		case arenav1.PhaseRunning:
 			if got.Status.Endpoint != "" {
-				return &Handle{ID: spec.ID, Endpoint: got.Status.Endpoint}, nil
+				return &Handle{ID: spec.ID, Mode: string(spec.Mode), Endpoint: got.Status.Endpoint}, nil
 			}
 		case arenav1.PhaseFailed:
 			// Telafi saga'da: kaydı bırakmayalım.
