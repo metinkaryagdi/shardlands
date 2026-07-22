@@ -16,9 +16,9 @@ TAG=${TAG:-dev}
 
 if [[ "${1:-}" != "--skip-build" ]]; then
   echo "==> imajlar derleniyor (tag: $TAG)"
-  docker build -f deploy/docker/Dockerfile.server   -t "shardlands/server:$TAG"   .
-  docker build -f deploy/docker/Dockerfile.arena    -t "shardlands/arena:$TAG"    .
-  docker build -f deploy/docker/Dockerfile.operator -t "shardlands/operator:$TAG" .
+  for img in server player arena operator smoke; do
+    docker build -f "deploy/docker/Dockerfile.$img" -t "shardlands/$img:$TAG" .
+  done
 fi
 
 if ! kind get clusters | grep -qx "$CLUSTER"; then
@@ -28,7 +28,8 @@ fi
 
 echo "==> imajlar düğümlere yükleniyor"
 kind load docker-image --name "$CLUSTER" \
-  "shardlands/server:$TAG" "shardlands/arena:$TAG" "shardlands/operator:$TAG"
+  "shardlands/server:$TAG" "shardlands/player:$TAG" "shardlands/arena:$TAG" \
+  "shardlands/operator:$TAG" "shardlands/smoke:$TAG"
 
 echo "==> CRD kuruluyor"
 # CRD ÖNCE gelmeli: sunucu ve operator, Arena tipini tanımayan bir API
@@ -41,8 +42,24 @@ echo "==> manifestler uygulanıyor"
 kubectl apply -f deploy/k8s/base/
 kubectl apply -f deploy/k8s/local/
 
+# Mesh politikaları YALNIZ Linkerd kuruluysa uygulanır. Kurulu değilse
+# CRD'leri olmadığı için apply hata verir; mesh'siz kurulum da geçerli
+# bir çalışma biçimi olduğu için bu adımı sessizce atlıyoruz.
+if kubectl get crd servers.policy.linkerd.io >/dev/null 2>&1; then
+  echo "==> mesh politikaları uygulanıyor"
+  kubectl apply -f deploy/k8s/mesh/00-identities.yaml
+  kubectl apply -f deploy/k8s/mesh/10-policy-player.yaml
+  kubectl apply -f deploy/k8s/mesh/11-policy-arena.yaml
+  kubectl apply -f deploy/k8s/mesh/12-policy-nats.yaml
+  kubectl apply -f deploy/k8s/mesh/13-policy-hub.yaml
+else
+  echo "==> Linkerd kurulu değil, mesh politikaları atlandı"
+  echo "    (kurmak için: ./deploy/mesh/install.sh)"
+fi
+
 echo "==> hazır olunuyor"
 kubectl -n shardlands rollout status statefulset/nats --timeout=120s
+kubectl -n shardlands rollout status deployment/player --timeout=120s
 kubectl -n shardlands rollout status statefulset/shardlands --timeout=180s
 kubectl -n shardlands rollout status deployment/shardlands-operator --timeout=120s
 

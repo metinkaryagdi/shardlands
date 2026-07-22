@@ -1,0 +1,15 @@
+# Player servisi: kimlik + token basımı. Durumsuz (bellekte kayıt
+# tutuyor; kalıcılık Faz 2'de event store'a taşınmadı — bilinçli borç).
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/player ./cmd/player
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/player /player
+USER 65532:65532
+EXPOSE 9101
+ENTRYPOINT ["/player", "-grpc", ":9101"]

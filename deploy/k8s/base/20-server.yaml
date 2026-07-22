@@ -29,6 +29,9 @@ metadata:
   namespace: shardlands
 data:
   NATS_URL: "nats://nats-0.nats.shardlands.svc.cluster.local:4222"
+  # PLAYER_ADDR dolu olduğunda player servisi bu süreçte açılmaz;
+  # gateway ayrı Pod'a gRPC ile bağlanır (mesh'in görebildiği atlama).
+  PLAYER_ADDR: "player.shardlands.svc.cluster.local:9101"
   # ARENA_NAMESPACE dolu olduğunda matchmaking saga'sı arenayı yerel
   # süreçte değil, Arena CRD'si yazarak açar (K8sProvisioner).
   ARENA_NAMESPACE: "shardlands"

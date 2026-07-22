@@ -1,0 +1,49 @@
+# ZERO TRUST KANITI — yetkisiz Pod.
+#
+# Bu Job, shardlands namespace'inde koşar (ağ olarak player servisine
+# ulaşabilir) ama `rogue` ServiceAccount'unu kullanır. Politika yalnız
+# `shardlands-server` kimliğine izin verdiği için çağrı reddedilmelidir.
+#
+# Testin ters mantığı: Job'ın BAŞARIYLA bitmesi, çağrının BAŞARISIZ
+# olduğu anlamına gelir. Job 1 ile çıkarsa politika delik demektir.
+#
+#   kubectl apply -f deploy/k8s/mesh/99-rogue-job.yaml
+#   kubectl -n shardlands logs job/rogue
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rogue
+  namespace: shardlands
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rogue
+  namespace: shardlands
+spec:
+  backoffLimit: 0 # tek deneme: bu bir test, iş değil
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: enabled
+        # Native sidecar olmadan Job asla bitmezdi — arena Pod'uyla
+        # birebir aynı sorun (docs/service-mesh.md §6a).
+        config.alpha.linkerd.io/proxy-enable-native-sidecar: "true"
+    spec:
+      serviceAccountName: rogue
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: rogue
+          image: shardlands/smoke:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-rogue"
+            - "player.shardlands.svc.cluster.local:9101"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

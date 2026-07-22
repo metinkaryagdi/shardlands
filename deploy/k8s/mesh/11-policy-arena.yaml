@@ -1,0 +1,38 @@
+# ARENA POD'LARI — maç durumu ve oyuncu girdisi.
+#
+# Bu Server tek bir arenayı değil, `app: shardlands-arena` etiketli TÜM
+# arena Pod'larını kapsar. Sebep: Pod'lar operator tarafından, isimleri
+# önceden bilinmeden yaratılıyor. Politika seviye-tetiklemeli reconcile
+# ile aynı mantıkla çalışır — "hangi Pod" değil, "hangi tür iş yükü".
+#
+# Yalnız hub çağırabilir: oyuncunun WS oturumu hub'da, arenaya vekillik
+# eden de hub. Doğrudan arenaya bağlanan bir istemci, başkasının
+# karakterini oynatabilirdi (fencing token bunu oturum düzeyinde
+# engelliyor; bu politika ise bağlantı düzeyinde engelliyor —
+# savunma derinliği).
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: arena-grpc
+  namespace: shardlands
+spec:
+  podSelector:
+    matchLabels:
+      app: shardlands-arena
+  port: game
+  proxyProtocol: gRPC
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: arena-grpc-hub-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: arena-grpc
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: hub-identity

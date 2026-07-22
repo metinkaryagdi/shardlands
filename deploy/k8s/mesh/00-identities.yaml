@@ -1,0 +1,36 @@
+# KİMLİKLER — politikaların "kim" tarafı.
+#
+# Linkerd'de iş yükü kimliği ServiceAccount'tan türer. Pod'un
+# ServiceAccount token'ını kube-apiserver imzalar; linkerd-identity onu
+# doğrulayıp karşılığında şu biçimde bir sertifika basar:
+#
+#   <serviceaccount>.<namespace>.serviceaccount.identity.linkerd.cluster.local
+#
+# SPIFFE'nin fikri budur: kimlik AĞ KONUMUNDAN (IP) değil, iş yükünün
+# kendisinden gelir. Pod taşınır, IP değişir, düğüm ölür — kimlik kalır.
+#
+# "Kim" ile "neye" ayrı kaynaklar olduğu için aynı kimlik listesi birden
+# çok Server'da yeniden kullanılabilir.
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  name: hub-identity
+  namespace: shardlands
+spec:
+  identities:
+    - "shardlands-server.shardlands.serviceaccount.identity.linkerd.cluster.local"
+---
+# Kubelet probları mesh dışından (düğüm IP'sinden) gelir ve mTLS kimliği
+# taşımaz. Linkerd, Pod spec'inde BEYAN EDİLMİŞ probe yollarını kendisi
+# yetkilendirir; bu kaynak, o otomatik davranışa güvenmek istemediğimiz
+# durumlar için (örneğin özel bir sağlık portu) hazır duruyor.
+apiVersion: policy.linkerd.io/v1alpha1
+kind: NetworkAuthentication
+metadata:
+  name: cluster-networks
+  namespace: shardlands
+spec:
+  networks:
+    - cidr: 10.0.0.0/8
+    - cidr: 172.16.0.0/12
+    - cidr: 192.168.0.0/16

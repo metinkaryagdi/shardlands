@@ -34,6 +34,18 @@ spec:
     metadata:
       labels:
         app: nats
+      annotations:
+        # NATS "ÖNCE SUNUCU KONUŞUR" bir protokoldür: bağlantı kurulur
+        # kurulmaz sunucu INFO {...} yollar. Linkerd portun protokolünü
+        # ilk baytlara bakarak algılar; istemciden bayt beklerken sunucu
+        # da istemciyi beklediği için algılama ~10sn zaman aşımına düşer
+        # ve HER NATS bağlantısı o kadar gecikmeyle başlardı.
+        #
+        # Portu "opak" ilan etmek = "çözümlemeye çalışma, şifreli TCP
+        # olarak taşı". mTLS yine uygulanır; kaybedilen tek şey
+        # protokol-farkında metrikler. Aynı tuzak MySQL, PostgreSQL ve
+        # SMTP için de geçerli (docs/service-mesh.md §6b).
+        config.linkerd.io/opaque-ports: "4222"
     spec:
       securityContext:
         # nats imajı uid 1000 ile koşar; PVC'nin sahipliği ona verilmezse

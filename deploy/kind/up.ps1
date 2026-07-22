@@ -11,14 +11,14 @@ Set-Location (Join-Path $PSScriptRoot "..\..")
 $cluster = "shardlands"
 $tag = if ($env:TAG) { $env:TAG } else { "dev" }
 
+$images = @("server", "player", "arena", "operator", "smoke")
+
 if (-not $SkipBuild) {
     Write-Host "==> imajlar derleniyor (tag: $tag)"
-    docker build -f deploy/docker/Dockerfile.server   -t "shardlands/server:$tag"   .
-    if ($LASTEXITCODE -ne 0) { throw "server imajı derlenemedi" }
-    docker build -f deploy/docker/Dockerfile.arena    -t "shardlands/arena:$tag"    .
-    if ($LASTEXITCODE -ne 0) { throw "arena imajı derlenemedi" }
-    docker build -f deploy/docker/Dockerfile.operator -t "shardlands/operator:$tag" .
-    if ($LASTEXITCODE -ne 0) { throw "operator imajı derlenemedi" }
+    foreach ($img in $images) {
+        docker build -f "deploy/docker/Dockerfile.$img" -t "shardlands/${img}:$tag" .
+        if ($LASTEXITCODE -ne 0) { throw "$img imaji derlenemedi" }
+    }
 }
 
 $existing = kind get clusters
@@ -29,7 +29,8 @@ if ($existing -notcontains $cluster) {
 }
 
 Write-Host "==> imajlar düğümlere yükleniyor"
-kind load docker-image --name $cluster "shardlands/server:$tag" "shardlands/arena:$tag" "shardlands/operator:$tag"
+$refs = $images | ForEach-Object { "shardlands/${_}:$tag" }
+kind load docker-image --name $cluster @refs
 
 Write-Host "==> CRD kuruluyor"
 kubectl apply -f operator/config/crd/
@@ -39,8 +40,23 @@ Write-Host "==> manifestler uygulanıyor"
 kubectl apply -f deploy/k8s/base/
 kubectl apply -f deploy/k8s/local/
 
+# Mesh politikaları yalnız Linkerd kuruluysa; mesh'siz kurulum da
+# geçerli bir çalışma biçimi.
+kubectl get crd servers.policy.linkerd.io 2>$null | Out-Null
+if ($?) {
+    Write-Host "==> mesh politikaları uygulanıyor"
+    kubectl apply -f deploy/k8s/mesh/00-identities.yaml
+    kubectl apply -f deploy/k8s/mesh/10-policy-player.yaml
+    kubectl apply -f deploy/k8s/mesh/11-policy-arena.yaml
+    kubectl apply -f deploy/k8s/mesh/12-policy-nats.yaml
+    kubectl apply -f deploy/k8s/mesh/13-policy-hub.yaml
+} else {
+    Write-Host "==> Linkerd kurulu degil, mesh politikalari atlandi"
+}
+
 Write-Host "==> hazır olunuyor"
 kubectl -n shardlands rollout status statefulset/nats --timeout=120s
+kubectl -n shardlands rollout status deployment/player --timeout=120s
 kubectl -n shardlands rollout status statefulset/shardlands --timeout=180s
 kubectl -n shardlands rollout status deployment/shardlands-operator --timeout=120s
 

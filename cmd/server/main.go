@@ -40,6 +40,10 @@ func main() {
 		ClientDir:       *clientDir,
 		DataDir:         *dataDir,
 		Provisioner:     prov,
+		// Boşsa player servisi bu süreçte açılır; Kubernetes'te ayrı
+		// Pod'un Service adresi verilir (mesh politikası için gerçek
+		// bir ağ atlaması gerekiyor — docs/service-mesh.md §5).
+		PlayerTarget: os.Getenv("PLAYER_ADDR"),
 		// Boşsa gömülü NATS; Kubernetes'te NATS_URL verilir.
 		NATSURL: os.Getenv("NATS_URL"),
 	})

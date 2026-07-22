@@ -36,8 +36,14 @@ import (
 )
 
 type Config struct {
-	HTTPAddr        string // örn ":8080"; test için "127.0.0.1:0"
-	PlayerAddr      string // player gRPC dinleme adresi
+	HTTPAddr   string // örn ":8080"; test için "127.0.0.1:0"
+	PlayerAddr string // player gRPC dinleme adresi (yerel mod)
+	// PlayerTarget doluysa player servisi BU SÜREÇTE başlatılmaz;
+	// gateway verilen adrese bağlanır. Kubernetes'te servis kendi
+	// Pod'unda koşar ve atlama gerçek bir ağ atlaması olur — mesh
+	// politikasının denetleyebileceği tek durum budur (loopback'i
+	// proxy görmez). Bkz. docs/service-mesh.md §5.
+	PlayerTarget    string
 	MatchmakingAddr string
 	Secret          []byte
 	ClientDir       string
@@ -93,11 +99,16 @@ func Start(cfg Config) (*Server, error) {
 	s := &Server{stopTick: make(chan struct{})}
 
 	// İç servisler: gerçek gRPC sunucuları (in-process ama ağ üstünde).
-	playerAddr, err := s.serveGRPC(cfg.PlayerAddr, func(gs *grpc.Server) {
-		pb.RegisterPlayerServiceServer(gs, player.New(cfg.Secret))
-	})
-	if err != nil {
-		return nil, err
+	// PlayerTarget verilmişse servis ayrı bir Pod'da koşuyordur.
+	playerAddr := cfg.PlayerTarget
+	if playerAddr == "" {
+		var err error
+		playerAddr, err = s.serveGRPC(cfg.PlayerAddr, func(gs *grpc.Server) {
+			pb.RegisterPlayerServiceServer(gs, player.New(cfg.Secret))
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Gateway'in servis istemcileri.
 	playerConn, err := grpc.NewClient(playerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))

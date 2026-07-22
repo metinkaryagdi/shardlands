@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,11 +27,21 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	pb "shardlands/gen/shardlands/v1"
 )
 
 func main() {
 	watch := flag.Duration("watch", 45*time.Second, "kuyruktan sonra izleme süresi")
+	rogue := flag.String("rogue", "", "zero-trust testi: player servisini yetkisiz çağır")
 	flag.Parse()
+
+	if *rogue != "" {
+		runRogue(*rogue)
+		return
+	}
 
 	base := os.Getenv("BASE")
 	if base == "" {
@@ -83,6 +94,38 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("TAMAM")
+}
+
+// runRogue, ZERO TRUST DENEYİ. Küme içinde ama BAŞKA bir
+// ServiceAccount ile koşan bir Pod'dan player servisini çağırır.
+//
+// Beklenen: bağlantı reddedilir. Bu Pod player Service'inin IP'sine
+// ulaşabilir — ağ onu engellemez, hatta aynı namespace'tedir. Engelleyen
+// şey KİMLİKTİR: AuthorizationPolicy yalnız hub'ın ServiceAccount
+// kimliğine izin veriyor. "Ağda olmak yetki üretmez" cümlesinin
+// çalışan kanıtı budur.
+//
+// Testin ters mantığına dikkat: BAŞARI = çağrının başarısız olması.
+// Çağrı geçerse politika delik demektir ve çıkış kodu 1'dir.
+func runRogue(addr string) {
+	fmt.Printf("yetkisiz çağrı deneniyor: %s\n", addr)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		fmt.Printf("TAMAM: bağlantı kurulamadı: %v\n", err)
+		return
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := pb.NewPlayerServiceClient(conn).CreatePlayer(ctx,
+		&pb.CreatePlayerRequest{Name: "sizma"})
+	if err != nil {
+		fmt.Printf("TAMAM: reddedildi -> %v\n", err)
+		return
+	}
+	fmt.Printf("BAŞARISIZ: politika delik, token alındı: %s\n", resp.PlayerId)
+	os.Exit(1)
 }
 
 func login(base, name string) (token, id string) {

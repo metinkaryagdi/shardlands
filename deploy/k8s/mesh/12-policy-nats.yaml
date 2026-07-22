@@ -1,0 +1,32 @@
+# NATS — event bus. Buraya yazabilen, dünyanın olay akışını
+# uydurabilir; okuyabilen, her oyuncunun her hareketini görür.
+#
+# proxyProtocol: opaque — NATS "önce sunucu konuşur" olduğu için
+# protokol algılaması takılırdı (docs/service-mesh.md §6b). Opak port
+# mTLS'i KAYBETTİRMEZ; yalnız protokol-farkında metrikleri kaybettirir.
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: nats-client
+  namespace: shardlands
+spec:
+  podSelector:
+    matchLabels:
+      app: nats
+  port: client
+  proxyProtocol: opaque
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: nats-client-hub-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: nats-client
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: hub-identity

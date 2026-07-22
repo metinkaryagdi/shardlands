@@ -1,0 +1,88 @@
+# Player servisi: kimlik ve token basımı.
+#
+# NEDEN AYRI POD? Ölçek için değil, GÜVENLİK için. Bu servis Faz 6'ya
+# kadar hub süreciyle aynı süreçte, 127.0.0.1:9101 üstünden koşuyordu.
+# Mesh proxy'si loopback trafiğini yakalamaz — o atlamaya yazılacak bir
+# yetkilendirme politikası hiçbir şeyi engellemez, yalnız panoda yeşil
+# görünürdü. Servis gerçekten ayrıldığı için artık "token basmaya yalnız
+# hub kimliği yetkilidir" kuralının denetleyecek bir atlaması var.
+# Bkz. docs/service-mesh.md §5.
+#
+# NEDEN Deployment? Durumsuz sayılır: kayıtları bellekte tutuyor ama
+# kalıcı bir sözü yok. replicas=1, çünkü kayıt defteri replikalar
+# arasında paylaşılmıyor (event store'a taşınması ayrı bir iş).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shardlands-player
+  namespace: shardlands
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: player
+  namespace: shardlands
+spec:
+  selector:
+    app: shardlands-player
+  ports:
+    - name: grpc
+      port: 9101
+      targetPort: 9101
+      appProtocol: grpc # mesh'e protokolü söyler (algılamaya bırakma)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: player
+  namespace: shardlands
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shardlands-player
+  template:
+    metadata:
+      labels:
+        app: shardlands-player
+    spec:
+      serviceAccountName: shardlands-player
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: player
+          image: shardlands/player:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9101
+              name: grpc
+          env:
+            - name: SHARDLANDS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: shardlands-secret
+                  key: SHARDLANDS_SECRET
+          # gRPC sunucusu HTTP probu sunmuyor; TCP probu "port açık mı"
+          # sorusunu cevaplar. gRPC health protokolü Faz 7'nin işi.
+          readinessProbe:
+            tcpSocket:
+              port: 9101
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9101
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

@@ -1,0 +1,32 @@
+# PLAYER SERVİSİ — token basımı. Kümedeki en hassas uç nokta:
+# buradan geçen herkes kendine geçerli bir oyuncu kimliği yazdırabilir.
+#
+# Politika: yalnız HUB kimliği çağırabilir. Aynı namespace'te koşan
+# başka bir Pod, player Service'inin IP'sine ulaşabilse bile bağlantısı
+# proxy tarafından reddedilir — ağda olmak yetki değildir.
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: player-grpc
+  namespace: shardlands
+spec:
+  podSelector:
+    matchLabels:
+      app: shardlands-player
+  port: grpc
+  proxyProtocol: gRPC
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: player-grpc-hub-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: player-grpc
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: hub-identity

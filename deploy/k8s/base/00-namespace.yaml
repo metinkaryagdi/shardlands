@@ -4,6 +4,23 @@ metadata:
   name: shardlands
   labels:
     name: shardlands
-    # Service mesh sidecar enjeksiyonu (Faz 6'nın sonraki adımı).
-    # linkerd.io/inject: enabled
-    # istio-injection: enabled
+  annotations:
+    # SIDECAR ENJEKSİYONU. Bu annotation'ı gören linkerd-proxy-injector
+    # (bir mutating admission webhook), namespace'teki her yeni Pod'a
+    # proxy konteynerini EKLEYEREK API sunucusuna geçirir. Uygulama
+    # manifestlerinde proxy'nin adı bile geçmez — mesh'in "kod
+    # değiştirmeden" vaadi teknik olarak burada gerçekleşir.
+    linkerd.io/inject: enabled
+
+    # ZERO TRUST'IN ANAHTARI. Varsayılan gelen-trafik politikası
+    # "reddet": mesh'e alınmış hiçbir portu hiç kimse çağıramaz, ta ki
+    # açık bir AuthorizationPolicy yazılana kadar. Ağda olmak yetki
+    # üretmez. Unutulup açık kalmış bir port kalamaz, çünkü varsayılan
+    # kapalıdır. Bkz. deploy/k8s/mesh/.
+    config.linkerd.io/default-inbound-policy: deny
+
+    # Kubernetes 1.29+ native sidecar: proxy, restartPolicy=Always olan
+    # bir init container olur. Kısa ömürlü arena Pod'unun BİTEBİLMESİ
+    # için şart — klasik sidecar hiç çıkmaz ve Pod sonsuza dek Running
+    # kalırdı (docs/service-mesh.md §6a).
+    config.alpha.linkerd.io/proxy-enable-native-sidecar: "true"

@@ -7,9 +7,11 @@ Faz 5'te konan soyutlamaların (`Provisioner`, `bus.Bus`) yerine oturması.
 
 ```
 deploy/
-  docker/       Dockerfile.server | .arena | .operator
-  k8s/base/     namespace, NATS, sunucu, operator (+RBAC)
+  docker/       Dockerfile.server | .player | .arena | .operator | .smoke
+  k8s/base/     namespace, NATS, player, sunucu, operator (+RBAC)
   k8s/local/    yalnız yerel küme için NodePort
+  k8s/mesh/     Linkerd zero-trust politikaları (Server/AuthorizationPolicy)
+  mesh/         Linkerd kontrol düzlemi kurulumu
   kind/         küme yapılandırması + up/down betikleri
 ```
 
@@ -52,6 +54,7 @@ istenen bir alışkanlık değil.
 | Bileşen | Tip | Neden |
 | --- | --- | --- |
 | `nats` | StatefulSet + PVC | JetStream stream'leri diskte. Sabit kimlik (`nats-0.nats`) DNS'ten adreslenir. |
+| `player` | Deployment | Kimlik/token servisi. Durumsuz sayılır (kayıtlar bellekte). |
 | `shardlands` (hub) | StatefulSet + PVC | Event store (LSM + WAL) ve shard Raft log'ları diskte. Kimlik ve disk Pod'a bağlı olmalı. |
 | `shardlands-operator` | Deployment | Tamamen durumsuz: tüm gerçeği API sunucusundan okur. Çökerse veri değil, yalnız gecikme kaybedilir. |
 | arena | Pod (operator yaratır) | Tek maçlık, `RestartPolicy: Never`. Bitince `Succeeded` → operator temizler. |
@@ -90,6 +93,72 @@ bir hub Pod'u kümede keyfi Pod açamaz.
 
 Operator ayrıca `--namespace=shardlands` ile başlatılır; controller-runtime
 cache'i o namespace'e daralır, yani kümenin geri kalanını list/watch etmez.
+
+## Service mesh (Linkerd) ve zero trust
+
+Kavramsal anlatım: [docs/service-mesh.md](../docs/service-mesh.md). Burada
+yalnız kurulum ve doğrulama var.
+
+```bash
+./deploy/mesh/install.sh     # linkerd CRD'leri + kontrol düzlemi
+kubectl -n shardlands rollout restart statefulset,deployment
+kubectl apply -f deploy/k8s/mesh/
+```
+
+`deploy/kind/up.sh` mesh politikalarını **yalnız Linkerd kuruluysa**
+uygular; mesh'siz kurulum da geçerli bir çalışma biçimidir.
+
+### Politika tablosu
+
+| Server | Port | Kim çağırabilir | Neden |
+| --- | --- | --- | --- |
+| `player-grpc` | 9101 | yalnız hub kimliği | Token basımı: buradan geçen kendine oyuncu kimliği yazdırır |
+| `arena-grpc` | 7777 | yalnız hub kimliği | Doğrudan bağlanan, başkasının karakterini oynatabilirdi |
+| `nats-client` | 4222 (opak) | yalnız hub kimliği | Yazabilen olay akışını uydurur, okuyan her şeyi görür |
+| `hub-http` | 8080 | küme ağı (kimliksiz) | Mesh'in kenarı: oyuncular dışarıdan gelir |
+
+Namespace'te `default-inbound-policy: deny` olduğu için bu tabloda
+olmayan **hiçbir port kimseye açık değildir**.
+
+### Player servisi neden ayrıldı?
+
+Mesh proxy'si **loopback trafiğini yakalamaz**. gateway → player
+atlaması `127.0.0.1:9101` üstündeyken oraya yazılacak politika hiçbir
+şeyi engellemez, yalnız panoda yeşil görünürdü — öğrenme projesinde en
+zararlı sonuç, çalıştığını sandığın bir güvenlik kontrolüdür. Servis
+gerçekten ayrıldı; `PLAYER_ADDR` boşsa eski tek-süreç davranışı korunur
+(testler değişmedi).
+
+Matchmaking bilerek bölünmedi: gateway onu gRPC ile değil doğrudan
+çağırıyor, bölmek için önce çağrı yolunu değiştirmek gerekir.
+
+### Zero trust'ı kanıtla
+
+```bash
+kubectl apply -f deploy/k8s/mesh/99-rogue-job.yaml
+kubectl -n shardlands logs job/rogue
+```
+
+`rogue` ServiceAccount'uyla koşan bu Job, player servisine ulaşabilir
+(aynı namespace, ağ engeli yok) ama politika yalnız hub kimliğine izin
+verdiği için reddedilmelidir. **Testin ters mantığı**: Job'ın başarıyla
+bitmesi, çağrının başarısız olduğu anlamına gelir.
+
+### Mesh'e özgü tuzaklar
+
+- **Kısa ömürlü Pod + sidecar = Pod hiç bitmez.** Arena Pod'u maç
+  bitince `Succeeded` olmalı; klasik sidecar hiç çıkmadığı için Pod
+  sonsuza dek `Running` kalırdı ve operator'ün temizlik akışı hiç
+  tetiklenmezdi. Çözüm native sidecar (K8s 1.29+): proxy
+  `restartPolicy: Always` olan bir init container olur, kubelet ana
+  konteyner çıkınca onu durdurur.
+- **NATS "önce sunucu konuşur".** Protokol algılaması ~10sn zaman
+  aşımına düşerdi; port opak ilan edildi. mTLS korunur, yalnız
+  protokol-farkında metrikler kaybedilir.
+- **Metrik portları da kapanır.** `default-inbound-policy: deny`
+  operator'ün 8081 metrik portunu da kapatır. Kubelet probları Linkerd
+  tarafından otomatik yetkilendirilir (Pod spec'inde beyan edilen probe
+  yolları), ama Prometheus scrape'i için Faz 7'de açık politika gerekecek.
 
 ## Sırlar
 

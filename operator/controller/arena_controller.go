@@ -192,6 +192,14 @@ func (r *ArenaReconciler) desiredPod(a *arenav1.Arena, name string) *corev1.Pod 
 				"app":              "shardlands-arena",
 				"shardlands/arena": a.Name,
 			},
+			// Mesh annotation'ları Pod'a BURADA yazılır, çünkü bu Pod'u
+			// bir manifest değil biz üretiyoruz. Native sidecar şart:
+			// klasik sidecar hiç çıkmaz, maç bitse de Pod Running kalır
+			// ve aşağıdaki Succeeded akışı hiç tetiklenmezdi.
+			Annotations: map[string]string{
+				"linkerd.io/inject": "enabled",
+				"config.alpha.linkerd.io/proxy-enable-native-sidecar": "true",
+			},
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever, // maç tek seferlik
