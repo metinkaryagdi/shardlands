@@ -26,7 +26,10 @@ pkg/ratelimit/ Faz 4: token bucket (rate limit / load shedding)        ✅
 proto/         Faz 1: gRPC/Protobuf kontratları (buf ile codegen)      ✅
 gen/           Üretilen Go kodu (commit'li — araçsız build için)       ✅
 services/      Faz 1+: gateway, player, world, matchmaking, server     ✅
-operator/      Faz 5: arena instance Kubernetes operator'ü             ⬜
+services/arena Faz 5: geçici dövüş instance'ları (lock-free tick)      ✅
+services/handoff Faz 5: hub↔arena transferi (dlock + fencing)          ✅
+operator/      Faz 5: arena instance Kubernetes operator'ü (CRD)       ✅
+experiments/   Faz 5: taşıma karşılaştırması (WS vs QUIC)              ✅
 client/        HTML5 Canvas + vanilla JS istemci                       ✅
 ```
 
@@ -237,6 +240,61 @@ graph TD
 - **Yük atmak bir hizmettir.** Hepsini kabul edip topluca çökmektense
   fazlasını hızlıca reddetmek; `Retry-After` ile istemciye ne yapacağını
   söylemek.
+
+## Faz 5 — Anlık Arenalar ve Gerçek Zamanlılık ✅
+
+| Parça | Notlar |
+|---|---|
+| Arena instance | [services/arena](services/arena/README.md) — 30Hz, lock-free girdi kuyruğu, false sharing benchmark'ı (**12.8×**) |
+| Matchmaking saga | [saga.go](services/matchmaking/saga.go) — provision + atama atomikliği, telafileriyle |
+| Hub↔arena handoff | [services/handoff](services/handoff/handoff.go) — dlock + **fencing token** + denetim izi |
+| K8s Operator | [operator/](operator/README.md) — Arena CRD + idempotent reconcile döngüsü |
+| WS vs QUIC | [docs/ws-vs-quic.md](docs/ws-vs-quic.md) — head-of-line blocking ölçümü |
+
+```mermaid
+graph TD
+    C[istemci] -->|WS| S["session aktörü<br/>(hub modu / arena modu)"]
+    S -->|input| R["hub bölgesi (20Hz)<br/>aktör mesajı"]
+    S -->|"queue"| MM[matchmaking]
+    MM -->|saga| PROV{{Provisioner}}
+    PROV -->|local| A["arena (30Hz)<br/>lock-free ring buffer"]
+    PROV -->|k8s| CRD[["Arena CRD"]]
+    CRD --> OP["operator reconcile"]
+    OP --> POD["arena Pod"]
+    MM -->|Assign| HO["handoff<br/>dlock + fencing token"]
+    HO -->|EnterArena / EnterHub| S
+    HO --> AUD[("denetim izi<br/>handoff-*")]
+    A -->|maç sonu| MM
+```
+
+### Faz 5 kapanış — dersler
+
+- **Aynı platformda iki gecikme profili.** Hub tutarlılık öncelikli
+  (aktör mesajı, 20Hz, kalıcı log); arena gecikme öncelikli (lock-free
+  ring buffer, 30Hz, geçici durum, aşırı yükte komut düşür). Projenin
+  ana tezi burada somutlaştı.
+- **False sharing ölçek büyüdükçe büyür.** Faz 0'da %24 olan etki,
+  çekişme 8 çekirdeğe yayılınca **12.8×**'e çıktı. Paylaşmadığını
+  sandığın şeyi donanım paylaşıyor olabilir.
+- **Kilit semantiği ≠ kullanım niyeti.** `dlock` aynı sahibin yeniden
+  almasını idempotent kabul eder (doğru davranış); ama biz iki *ayrı
+  transferi* dışlamak istiyorduk — sahip kimliğini transfer başına
+  benzersiz yapmak gerekti.
+- **Fencing token'ın yeri kaynaktır.** Kilit, duraklamış bir sahibin
+  gecikmiş emrini engellemez; oturum küçük token'lı emri reddederek
+  engeller. Faz 3'te "doğru yer kaynak tarafı" demiştik — burada gerçek
+  bir kaynakta kanıtlandı.
+- **Arayüzü erken koymanın bedeli düşük, getirisi yüksek.**
+  `Provisioner` Faz 5'in başında konmuştu; Kubernetes sağlayıcısı
+  eklenirken saga'da **tek satır** değişmedi.
+- **Reconcile idempotent ve seviye-tetiklemeli olmalı.** "Olay oldu,
+  şunu yap" değil "arzu edilen bu, farkı kapat" — kaçan olay ve yeniden
+  başlatma bu sayede kendini düzeltir.
+- **Güvenilirlik her zaman istenen özellik değildir.** TCP'nin "hiçbir
+  kare kaybolmasın" garantisi, kayıplı ağda p99'u 150ms'ye çıkardı;
+  QUIC datagram %10 kare kaybetti ama kuyruk tıkanmadı (p99≈0). Doğru
+  soru "hangi taşıma iyi" değil, "bu veri için hangi garantiyi
+  istiyorum".
 
 ## Çalıştırma
 
