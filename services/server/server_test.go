@@ -82,6 +82,8 @@ type wireMsg struct {
 	Type    string `json:"type"`
 	ID      string `json:"id"`
 	Tick    uint64 `json:"tick"`
+	Region  string `json:"region"`
+	Shard   string `json:"shard"`
 	Players []struct {
 		ID     string  `json:"id"`
 		Name   string  `json:"name"`

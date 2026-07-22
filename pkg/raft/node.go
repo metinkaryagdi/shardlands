@@ -21,8 +21,9 @@ type Node struct {
 
 	commitIndex uint64
 	lastApplied uint64
-	nextIndex   map[string]uint64 // lider: her peer'a gönderilecek sıradaki index
-	matchIndex  map[string]uint64 // lider: her peer'da bilinen eşleşme
+	nextIndex   map[string]uint64    // lider: her peer'a gönderilecek sıradaki index
+	matchIndex  map[string]uint64    // lider: her peer'da bilinen eşleşme
+	lastAck     map[string]time.Time // lider: peer'dan en son cevap alınan an
 
 	electionReset   time.Time
 	electionTimeout time.Duration
@@ -58,6 +59,7 @@ func NewNode(cfg Config) (*Node, error) {
 		log:        hs.Log,
 		nextIndex:  map[string]uint64{},
 		matchIndex: map[string]uint64{},
+		lastAck:    map[string]time.Time{},
 		stopCh:     make(chan struct{}),
 		rng:        rand.New(rand.NewSource(seed)),
 	}
@@ -79,6 +81,29 @@ func (n *Node) Stop() {
 	n.stopped = true
 	close(n.stopCh)
 	n.applyCond.Broadcast()
+}
+
+// QuorumActive, "lider miyim VE son window içinde çoğunlukla temasım
+// sürüyor mu" sorusunun cevabıdır (leader lease benzeri).
+//
+// Neden gerekli? Bölünmüş bir lider, daha yüksek bir dönem görene kadar
+// KENDİNİ lider sanmaya devam eder ama commit edemez. Sadece Status()'a
+// bakmak "kullanılabilir" yanılgısı verir. QuorumActive bu ikisini
+// ayırır: azınlıkta kalan lider false döner — CAP'in C tarafının somut
+// ölçümü.
+func (n *Node) QuorumActive(window time.Duration) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.stopped || n.state != Leader {
+		return false
+	}
+	count := 1 // kendimiz
+	for _, p := range n.cfg.Peers {
+		if t, ok := n.lastAck[p]; ok && time.Since(t) <= window {
+			count++
+		}
+	}
+	return count*2 > len(n.cfg.Peers)+1
 }
 
 // Status: (dönem, lider mi) — testler ve üst katman için.
@@ -163,6 +188,15 @@ func (n *Node) startElection() {
 		LastLogTerm:  n.termAtLocked(n.lastLogIndexLocked()),
 	}
 	votes := 1 // kendi oyu
+	// Kendi oyu ZATEN çoğunluksa (tek düğümlü küme) hemen lider ol.
+	// Çoğunluk kontrolünü yalnızca peer cevabında yapmak, peer'i olmayan
+	// bir kümede seçimin hiç sonuçlanmamasına yol açardı.
+	if votes*2 > len(n.cfg.Peers)+1 {
+		n.becomeLeaderLocked()
+		n.mu.Unlock()
+		n.replicateToPeers() // peer yoksa no-op
+		return
+	}
 	n.mu.Unlock()
 
 	for _, peer := range n.cfg.Peers {
@@ -253,6 +287,8 @@ func (n *Node) replicateTo(peer string) {
 	if n.state != Leader || n.term != term {
 		return // bu cevap eski bir liderlik dönemine ait
 	}
+	// Peer'dan cevap geldi: temas kaydı (QuorumActive/lease için).
+	n.lastAck[peer] = time.Now()
 	if resp.Success {
 		m := prevIdx + uint64(len(req.Entries))
 		if m > n.matchIndex[peer] {

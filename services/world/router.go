@@ -22,6 +22,14 @@ const ringReplicas = 128
 //
 // regions/shardOf kurulumdan SONRA değişmez (yalnız okunur); shardUp
 // çalışma anında değişir (kilitli).
+// Availability, bir shard'ın hizmet verebilirliğini bildiren kaynaktır.
+// Faz 3'te bunu services/shard sağlar: shard'ın Raft grubunda ÇOĞUNLUKLA
+// TEMASI SÜREN bir lider varsa kullanılabilir. Nil ise (testler) shard'lar
+// manuel bayrakla yönetilir.
+type Availability interface {
+	Available(shard string) bool
+}
+
 type Router struct {
 	ring    *hashring.Ring
 	regions map[string]*actor.Ref
@@ -29,6 +37,7 @@ type Router struct {
 
 	mu      sync.RWMutex
 	shardUp map[string]bool
+	avail   Availability
 }
 
 // NewHub, shard node'ları ve bölgeleri kurar: her bölge için bir aktör
@@ -109,12 +118,27 @@ func (r *Router) SpawnRegion(x, y float64) (regionID, shard string, ref *actor.R
 	return id, r.shardOf[id], r.regions[id]
 }
 
-// ShardUp / SetShardUp: CAP deneyi. Bir shard "down" ise bölgeleri
-// kullanılamaz (handoff hedefi olamaz; yeni giriş alamaz).
+// SetAvailability, shard kullanılabilirliğinin kaynağını bağlar
+// (Faz 3: Raft grup liderliği).
+func (r *Router) SetAvailability(a Availability) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.avail = a
+}
+
+// ShardUp: shard hizmet verebiliyor mu? Manuel bayrak (testler) VE
+// bağlıysa Availability kaynağı — ikisi de "evet" demeli.
 func (r *Router) ShardUp(shard string) bool {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.shardUp[shard]
+	up, av := r.shardUp[shard], r.avail
+	r.mu.RUnlock()
+	if !up {
+		return false
+	}
+	if av != nil {
+		return av.Available(shard)
+	}
+	return true
 }
 
 func (r *Router) SetShardUp(shard string, up bool) {

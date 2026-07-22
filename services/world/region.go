@@ -85,7 +85,15 @@ func (r *region) Receive(ctx *actor.Context) {
 	}
 }
 
+// frozen: bu bölgeyi barındıran shard hizmet veremiyorsa (Raft grubunda
+// çoğunluk yok) bölge DONAR — simülasyon ilerlemez, komut kabul edilmez.
+// CAP'in C tarafı: tutarlılık için kullanılabilirlikten vazgeçiyoruz.
+func (r *region) frozen() bool { return !r.router.ShardUp(r.shard) }
+
 func (r *region) handleChat(m Chat) {
+	if r.frozen() {
+		return
+	}
 	e, ok := r.players[m.PlayerID]
 	if !ok {
 		return
@@ -106,6 +114,9 @@ func (r *region) handleChat(m Chat) {
 }
 
 func (r *region) handleGather(m Gather) {
+	if r.frozen() {
+		return
+	}
 	e, ok := r.players[m.PlayerID]
 	if !ok {
 		return
@@ -139,6 +150,9 @@ func (r *region) handleGather(m Gather) {
 // tickStep: fiziği ilerlet, sınır geçenleri HANDOFF et, kalanlara
 // snapshot yayınla.
 func (r *region) tickStep(ctx *actor.Context) {
+	if r.frozen() {
+		return // shard kullanılamaz: ilerleme yok, snapshot yok
+	}
 	const dt = 1.0 / TickRate
 	for _, n := range r.nodes {
 		if n.respawnAt != 0 && r.tick >= n.respawnAt {

@@ -25,6 +25,7 @@ import (
 	"shardlands/services/inventory"
 	"shardlands/services/matchmaking"
 	"shardlands/services/player"
+	"shardlands/services/shard"
 	"shardlands/services/stats"
 	"shardlands/services/trade"
 	"shardlands/services/world"
@@ -38,6 +39,7 @@ type Config struct {
 	ClientDir       string
 	DataDir         string   // event store'un yaşadığı dizin
 	Shards          []string // shard node id'leri (boşsa iki node varsayılan)
+	ShardReplicas   int      // shard başına Raft replikası (boşsa 3)
 }
 
 type Server struct {
@@ -52,12 +54,16 @@ type Server struct {
 	inv      *inventory.Inventory
 	stats    *stats.Stats
 	router   *world.Router
+	shards   *shard.Manager
 	stopTick chan struct{}
 	stopOnce sync.Once
 }
 
 // Router, CAP deneyi ve gözlem için shard router'ına erişim verir.
 func (s *Server) Router() *world.Router { return s.router }
+
+// Shards, shard Raft gruplarına erişim verir (CAP deneyi: izolasyon).
+func (s *Server) Shards() *shard.Manager { return s.shards }
 
 // Start, tüm bileşenleri ayağa kaldırır ve dinlemeye başlar.
 func Start(cfg Config) (*Server, error) {
@@ -109,6 +115,22 @@ func Start(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s.router = router
+
+	// Her shard bir Raft grubu: liderlik = shard sahipliği. Bölgeler
+	// yalnız shard'ın çoğunluğu ayaktayken simüle edilir (CAP: C).
+	mgr, err := shard.NewManager(cfg.Shards, shard.Options{
+		Replicas: cfg.ShardReplicas,
+		DataDir:  filepath.Join(cfg.DataDir, "raft"),
+	})
+	if err != nil {
+		s.Stop()
+		return nil, err
+	}
+	s.shards = mgr
+	router.SetAvailability(mgr)
+	// Liderler oturana kadar bekle: aksi halde ilk saniyede bölgeler
+	// donuk görünürdü.
+	mgr.WaitReady(5 * time.Second)
 	go func() {
 		t := time.NewTicker(time.Second / world.TickRate)
 		defer t.Stop()
@@ -183,6 +205,9 @@ func (s *Server) stop() {
 	}
 	if s.stats != nil {
 		s.stats.Close()
+	}
+	if s.shards != nil {
+		s.shards.Stop()
 	}
 	if s.events != nil {
 		s.events.Close()
