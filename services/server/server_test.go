@@ -449,6 +449,33 @@ func TestStatsE2E(t *testing.T) {
 	t.Fatalf("online never dropped to 0 after disconnect")
 }
 
+// Hız sınırı: aynı IP'den hızlı ardışık giriş denemeleri bir noktadan
+// sonra 429 ile reddedilir (kötüye kullanım koruması + yük atma).
+func TestLoginRateLimited(t *testing.T) {
+	srv := startTestServer(t)
+
+	var got429 bool
+	var retryAfter string
+	for i := 0; i < 30 && !got429; i++ {
+		body, _ := json.Marshal(map[string]string{"name": fmt.Sprintf("u%d", i)})
+		resp, err := http.Post("http://"+srv.HTTPAddr+"/api/login", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			got429 = true
+			retryAfter = resp.Header.Get("Retry-After")
+		}
+		resp.Body.Close()
+	}
+	if !got429 {
+		t.Fatal("rate limiter never rejected rapid logins")
+	}
+	if retryAfter == "" {
+		t.Fatal("429 response missing Retry-After header")
+	}
+}
+
 // Kimliksiz/bozuk token'la WS el sıkışması reddedilmeli.
 func TestWSRejectsBadToken(t *testing.T) {
 	srv := startTestServer(t)
