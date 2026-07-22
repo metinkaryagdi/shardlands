@@ -81,6 +81,21 @@ func NewMatcher(store *es.Store, prov Provisioner, assigner Assigner) *Matcher {
 	}
 }
 
+// SetAssigner, atama bileşenini sonradan takar (gateway kurulum
+// döngüsünü kırmak için).
+func (m *Matcher) SetAssigner(a Assigner) {
+	m.mu.Lock()
+	m.assigner = a
+	m.mu.Unlock()
+}
+
+// getAssigner, atayıcıyı kilitli okur (SetAssigner ile yarışmasın).
+func (m *Matcher) getAssigner() Assigner {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.assigner
+}
+
 // Register/Unregister: gateway, bağlanan oyuncuyu oturum ref'iyle
 // kaydeder (gRPC üzerinden ref taşınamaz).
 func (m *Matcher) Register(p QueuedPlayer) {
@@ -211,15 +226,16 @@ func (m *Matcher) runSaga(mt match) {
 	m.appendPhase(mt.id, EventArenaProvisioned)
 
 	// Adım 2: atama.
+	asg := m.getAssigner()
 	assigned := make([]string, 0, len(mt.players))
 	for i, p := range mt.players {
-		if m.assigner == nil {
+		if asg == nil {
 			continue
 		}
-		if err := m.assigner.Assign(p.ID, h, mt.teams[i]); err != nil {
+		if err := asg.Assign(p.ID, h, mt.teams[i]); err != nil {
 			// TELAFİ: atananları geri al, arenayı yık, herkesi kuyruğa iade et.
 			for _, id := range assigned {
-				m.assigner.Release(id)
+				asg.Release(id)
 			}
 			m.prov.Destroy(ctx, h.ID)
 			m.cancel(mt, "assign "+p.ID+": "+err.Error(), nil)
@@ -237,9 +253,9 @@ func (m *Matcher) runSaga(mt match) {
 func (m *Matcher) onMatchEnd(mt match, r arena.Result) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if m.assigner != nil {
+	if asg := m.getAssigner(); asg != nil {
 		for _, p := range mt.players {
-			m.assigner.Release(p.ID)
+			asg.Release(p.ID)
 		}
 	}
 	m.prov.Destroy(ctx, r.ArenaID)

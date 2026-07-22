@@ -20,9 +20,11 @@ import (
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/pkg/actor"
 	"shardlands/pkg/bus"
+	"shardlands/pkg/dlock"
 	"shardlands/pkg/es"
 	"shardlands/services/chat"
 	"shardlands/services/gateway"
+	"shardlands/services/handoff"
 	"shardlands/services/inventory"
 	"shardlands/services/matchmaking"
 	"shardlands/services/outbox"
@@ -62,6 +64,8 @@ type Server struct {
 	shards      *shard.Manager
 	matcher     *matchmaking.Matcher
 	provisioner *matchmaking.LocalProvisioner
+	locks       *dlock.Manager
+	handoff     *handoff.Coordinator
 	stopTick    chan struct{}
 	stopOnce    sync.Once
 }
@@ -198,7 +202,18 @@ func Start(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s.HTTPAddr = httpLis.Addr().String()
-	s.httpSrv = &http.Server{Handler: gateway.New(gateway.Config{
+
+	// Oyuncu başına dağıtık kilit: hub↔arena transferinde çifte
+	// transferi engeller ve fencing token üretir.
+	locks, err := dlock.New("handoff", dlock.Options{Replicas: 3})
+	if err != nil {
+		s.Stop()
+		return nil, err
+	}
+	s.locks = locks
+	locks.WaitReady(5 * time.Second)
+
+	gw := gateway.New(gateway.Config{
 		Secret:    cfg.Secret,
 		ClientDir: cfg.ClientDir,
 		System:    s.system,
@@ -208,7 +223,16 @@ func Start(cfg Config) (*Server, error) {
 		Inventory: s.inv,
 		Trades:    trades,
 		Stats:     s.stats,
-	})}
+		Matcher:   s.matcher,
+	})
+	// Kurulum döngüsünü kır: koordinatör gateway'i SessionPort olarak
+	// kullanır, gateway koordinatörü handoff için; matcher da gateway'i
+	// Assigner olarak.
+	s.handoff = handoff.New(locks, events, gw, "gateway-0")
+	gw.SetHandoff(s.handoff)
+	s.matcher.SetAssigner(gw)
+
+	s.httpSrv = &http.Server{Handler: gw.Handler()}
 	go s.httpSrv.Serve(httpLis)
 
 	return s, nil
@@ -253,6 +277,9 @@ func (s *Server) stop() {
 	}
 	if s.shards != nil {
 		s.shards.Stop()
+	}
+	if s.locks != nil {
+		s.locks.Stop()
 	}
 	// Bus zinciri ters sırayla: tüketiciler → relay → bağlantı → sunucu.
 	if s.relay != nil {
