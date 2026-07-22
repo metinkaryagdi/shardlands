@@ -20,6 +20,15 @@ if ! command -v linkerd >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "==> Gateway API CRD'leri"
+# Linkerd edge sürümleri Gateway API CRD'lerini ÖN KOŞUL sayar
+# (HTTPRoute/GRPCRoute tiplerini kendi politika modelinde kullanır).
+# Kurulu değilse `linkerd check --pre` doğrudan burada durur.
+if ! kubectl get crd httproutes.gateway.networking.k8s.io >/dev/null 2>&1; then
+  kubectl apply --server-side -f \
+    "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml"
+fi
+
 echo "==> ön kontrol"
 linkerd check --pre
 

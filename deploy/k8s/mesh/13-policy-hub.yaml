@@ -10,7 +10,7 @@
 # (pkg/ratelimit) ve oturum fencing token'ı. Mesh iç atlamaları korur;
 # kenarı uygulama korur. İkisini karıştırmak, kenarda mTLS varmış
 # yanılsaması üretir.
-apiVersion: policy.linkerd.io/v1beta1
+apiVersion: policy.linkerd.io/v1beta3
 kind: Server
 metadata:
   name: hub-http

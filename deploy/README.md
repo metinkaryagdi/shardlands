@@ -100,13 +100,14 @@ Kavramsal anlatım: [docs/service-mesh.md](../docs/service-mesh.md). Burada
 yalnız kurulum ve doğrulama var.
 
 ```bash
-./deploy/mesh/install.sh     # linkerd CRD'leri + kontrol düzlemi
+./deploy/mesh/install.sh          # Gateway API + linkerd CRD'leri + kontrol düzlemi
+kubectl apply -f deploy/k8s/mesh/ # politikalar
 kubectl -n shardlands rollout restart statefulset,deployment
-kubectl apply -f deploy/k8s/mesh/
 ```
 
-`deploy/kind/up.sh` mesh politikalarını **yalnız Linkerd kuruluysa**
-uygular; mesh'siz kurulum da geçerli bir çalışma biçimidir.
+`deploy/kind/up.sh` mesh politikalarını **yalnız Linkerd kuruluysa** ve
+**iş yüklerinden önce** uygular; mesh'siz kurulum da geçerli bir çalışma
+biçimidir.
 
 ### Politika tablosu
 
@@ -144,8 +145,58 @@ kubectl -n shardlands logs job/rogue
 verdiği için reddedilmelidir. **Testin ters mantığı**: Job'ın başarıyla
 bitmesi, çağrının başarısız olduğu anlamına gelir.
 
-### Mesh'e özgü tuzaklar
+### Doğrulanan zincir
 
+Aşağıdakilerin hepsi kind kümesinde gerçekten koşturuldu:
+
+Sıfırdan kurulan bir kümede, ilk denemede:
+
+```
+4/4 Pod meshli (linkerd-proxy native sidecar init container olarak)
+hub sertifikası: CN=shardlands-server.shardlands.serviceaccount.identity.linkerd.cluster.local
+hub -> player  : izin verildi (giriş çalışıyor, token basılıyor)
+hub -> arena   : izin verildi (1046 arena karesi aktı)
+rogue -> player: REDDEDİLDİ
+  code = PermissionDenied desc = unauthorized request on route
+  client_id=rogue.shardlands.serviceaccount.identity.linkerd.cluster.local
+arena Pod'u meshli haldeyken Completed oldu ve operator temizledi
+```
+
+İki satır kritik. **Sonuncusu**: native sidecar olmasaydı arena Pod'u
+sonsuza dek `Running` kalır, Faz 5'in tüm yaşam döngüsü kırılırdı.
+**Rogue'un hata kodu**: `PermissionDenied` temiz bir gRPC durumudur —
+`appProtocol` yanlışken aynı ret `EOF` diye görünüyordu. Doğru protokol
+beyanı yalnız bağlantıyı değil, **hata mesajlarının okunabilirliğini**
+de düzeltiyor.
+
+### Mesh'e özgü tuzaklar (yaşanmış)
+
+- **`appProtocol: grpc` yazma — `kubernetes.io/h2c` yaz.** Linkerd yalnız
+  Gateway API'nin standart `appProtocol` değerlerini tanır; tanımadığı
+  bir değerde bağlantıyı HTTP/1'e düşürür. gRPC istemcisinin HTTP/2
+  preface'i karşılıksız kalır ve uygulama şu hatayı görür:
+  `connection error: desc = "error reading server preface: EOF"`.
+
+  Bu tuzağın maliyeti yanlış teşhistir: hata TLS/politika sorunu gibi
+  görünür ve **player proxy'sinde `Connection denied` olarak loglanır**
+  (Server gRPC bekliyor, gelen HTTP/1). Kimlik doğru, politika doğru,
+  `linkerd diagnostics policy` "yetkili" diyor — ama bağlantı düşüyor.
+  Bu oturumda önce "politika sırası" sanıldı ve yanlış yerde arandı;
+  gerçek nedeni izole eden şey tek değişkenli deney oldu: `appProtocol`
+  kaldırıldığında çalıştı, `grpc` geri konduğunda bozuldu,
+  `kubernetes.io/h2c` ile kalıcı olarak çalıştı.
+- **Politikaları iş yüklerinden önce uygulamak yine de doğru sıra.**
+  Yukarıdaki teşhis sırasında sınandı ve tek başına bir arıza üretmedi,
+  ama `default-inbound-policy: deny` altında iş yükünü kuralsız açmak
+  gereksiz bir yarış penceresi bırakır. `up.sh` bu yüzden namespace →
+  politikalar → iş yükleri sırasını izliyor.
+- **Enjektör hazır değilken açılan Pod'lar SESSİZCE meshsiz kalır.**
+  `linkerd-proxy-injector` webhook'unun `failurePolicy: Ignore` olması
+  bilinçli bir tasarım (mesh çökerse küme çalışmaya devam etsin) ama
+  sonucu şu: ilk `apply`'da Pod'lar proxy'siz açıldı ve hiçbir yerde
+  hata görünmedi. Kontrol: `kubectl get pod -o jsonpath` ile
+  `initContainers` içinde `linkerd-proxy` var mı diye bak — "Pod
+  çalışıyor" mesh'e alındığı anlamına gelmez.
 - **Kısa ömürlü Pod + sidecar = Pod hiç bitmez.** Arena Pod'u maç
   bitince `Succeeded` olmalı; klasik sidecar hiç çıkmadığı için Pod
   sonsuza dek `Running` kalırdı ve operator'ün temizlik akışı hiç
@@ -155,6 +206,27 @@ bitmesi, çağrının başarısız olduğu anlamına gelir.
 - **NATS "önce sunucu konuşur".** Protokol algılaması ~10sn zaman
   aşımına düşerdi; port opak ilan edildi. mTLS korunur, yalnız
   protokol-farkında metrikler kaybedilir.
+- **Gateway API CRD'leri ön koşul.** Linkerd edge sürümleri
+  HTTPRoute/GRPCRoute tiplerini kendi politika modelinde kullanıyor;
+  yoksa `linkerd check --pre` daha ilk adımda duruyor. `install.sh`
+  bunu kendisi hallediyor.
+- **`Server` v1beta1 kullanımdan kalktı.** Küme `apply` sırasında
+  uyarıyor; manifestler v1beta3'e taşındı.
+- **Finalizer kilidi: namespace silmek takılır.** `kubectl delete
+  namespace shardlands` sonsuza kadar `Terminating` kaldı. Sebep bizim
+  kendi tasarımımız: Arena kaynaklarında `shardlands.dev/arena-cleanup`
+  finalizer'ı var ve onu kaldıracak olan operator de aynı namespace'te
+  olduğu için önce o siliniyor. Kimse finalizer'ı kaldıramıyor.
+  Kurtarma:
+
+  ```bash
+  kubectl -n shardlands patch arena <ad> --type=json \
+    -p='[{"op":"remove","path":"/metadata/finalizers"}]'
+  ```
+
+  Ders: finalizer bir SÖZDÜR — "ben temizleyeceğim". Sözü verenin
+  ölebileceği yerlerde (aynı namespace, aynı küme) sözün nasıl
+  bozulacağını da tasarlamak gerekir.
 - **Metrik portları da kapanır.** `default-inbound-policy: deny`
   operator'ün 8081 metrik portunu da kapatır. Kubelet probları Linkerd
   tarafından otomatik yetkilendirilir (Pod spec'inde beyan edilen probe

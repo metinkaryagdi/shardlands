@@ -29,7 +29,22 @@ spec:
     - name: grpc
       port: 9101
       targetPort: 9101
-      appProtocol: grpc # mesh'e protokolü söyler (algılamaya bırakma)
+      # DEĞER ÖNEMLİ: "grpc" DEĞİL, "kubernetes.io/h2c".
+      #
+      # appProtocol mesh'e protokolü söyler ve algılamayı atlatır. Ama
+      # Linkerd yalnız Gateway API'nin standart değerlerini tanır;
+      # tanımadığı bir değer gördüğünde bağlantıyı HTTP/1'e düşürür.
+      # gRPC istemcisi HTTP/2 preface yollayınca karşı taraf onu
+      # anlamaz ve bağlantı kapanır:
+      #
+      #   rpc error: code = Unavailable desc = connection error:
+      #   desc = "error reading server preface: EOF"
+      #
+      # Belirtinin sinsiliği: hata TLS ya da politika sorunu gibi
+      # görünür, hatta player proxy'sinde "Connection denied" olarak
+      # loglanır — çünkü Server gRPC bekliyor, gelen HTTP/1. Saatlerce
+      # yanlış yerde aranır (arandı).
+      appProtocol: kubernetes.io/h2c
 ---
 apiVersion: apps/v1
 kind: Deployment

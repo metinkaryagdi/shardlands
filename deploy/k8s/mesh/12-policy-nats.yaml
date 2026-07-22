@@ -4,7 +4,7 @@
 # proxyProtocol: opaque — NATS "önce sunucu konuşur" olduğu için
 # protokol algılaması takılırdı (docs/service-mesh.md §6b). Opak port
 # mTLS'i KAYBETTİRMEZ; yalnız protokol-farkında metrikleri kaybettirir.
-apiVersion: policy.linkerd.io/v1beta1
+apiVersion: policy.linkerd.io/v1beta3
 kind: Server
 metadata:
   name: nats-client

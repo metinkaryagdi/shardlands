@@ -10,7 +10,7 @@
 # karakterini oynatabilirdi (fencing token bunu oturum düzeyinde
 # engelliyor; bu politika ise bağlantı düzeyinde engelliyor —
 # savunma derinliği).
-apiVersion: policy.linkerd.io/v1beta1
+apiVersion: policy.linkerd.io/v1beta3
 kind: Server
 metadata:
   name: arena-grpc

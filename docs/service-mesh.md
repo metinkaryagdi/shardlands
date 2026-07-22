@@ -43,7 +43,7 @@ gelir. `services/arena/server.go` hâlâ `grpc.NewServer()` diyor,
 Bedeli dürüstçe: her Pod'a fazladan bir konteyner, fazladan ~5-10ms
 gecikme değil ama fazladan bellek/CPU ve — en önemlisi — **fazladan bir
 hata kaynağı**. Ağ artık "çalışır ya da çalışmaz" değil; proxy'nin
-yapılandırması da yanlış olabilir. Aşağıdaki iki tuzak tam olarak bu.
+yapılandırması da yanlış olabilir. §6'daki beş tuzak tam olarak bu.
 
 ### Data plane / control plane
 
@@ -142,7 +142,7 @@ Matchmaking bilerek bölünmedi: gateway onu gRPC ile değil, doğrudan
 çağırıyor. Bölmek için önce çağrı yolunu değiştirmek gerekir — o ayrı bir
 iş ve bu adımın konusu değil.
 
-## 6. İki gerçek tuzak
+## 6. Beş gerçek tuzak
 
 ### (a) Kısa ömürlü iş yükü + sidecar = Pod hiç bitmez
 
@@ -187,6 +187,67 @@ config.linkerd.io/opaque-ports: "4222"
 mTLS yine uygulanır; kaybedilen şey yalnız protokol-farkında metrikler
 (HTTP durum kodu gibi). Aynı tuzak MySQL, PostgreSQL, Redis (bazı
 sürümlerde) ve SMTP için de geçerlidir.
+
+### (c) `appProtocol` değeri — yanlış teşhisin anatomisi
+
+Bu, ancak kümede koşturunca ortaya çıktı ve bu notun en öğretici parçası
+olduğu için teşhis süreciyle birlikte yazıyorum.
+
+Player Service'ine mesh'e protokolü söylemek için `appProtocol: grpc`
+yazmıştım. Sonuç: hub → player çağrıları düştü.
+
+Görünen belirtiler birbirini doğrular gibiydi ve hepsi yanlış yeri
+işaret ediyordu:
+
+| Nerede | Ne görünüyordu | Neyi düşündürüyordu |
+| --- | --- | --- |
+| Hub uygulaması | `error reading server preface: EOF` | TLS el sıkışması bozuk |
+| Player proxy'si | `Connection denied ... server.name=player-grpc` | Yetkilendirme politikası yanlış |
+| `linkerd diagnostics policy` | Doğru kimlik, "yetkili" | Politika doğru?! |
+
+İlk hipotez "politika sırası" oldu: `deny` altında açılmış proxy'ler
+kuralı geç öğreniyordur. Makul geliyordu ve bir kez de doğrulanmış gibi
+oldu (bir Pod yeniden başlatıldıktan sonra çalıştı). **Yanlıştı.**
+Politikalar iş yüklerinden önce uygulanarak küme sıfırdan kurulduğunda
+arıza aynen tekrar etti.
+
+Doğru neden tek değişkenli deneyle bulundu: `appProtocol` kaldırıldı →
+çalıştı; `grpc` geri kondu → bozuldu; `kubernetes.io/h2c` yazıldı →
+kalıcı olarak çalıştı.
+
+Mekanizma: Linkerd yalnız Gateway API'nin **standart** `appProtocol`
+değerlerini tanır. Tanımadığı bir değer gördüğünde bağlantıyı HTTP/1
+sayar. gRPC istemcisi HTTP/2 preface yollar, karşılık gelmez, bağlantı
+kapanır. İnbound tarafta ise `Server` gRPC beklerken HTTP/1 geldiği için
+politika eşleşmesi düşer ve olay **"Connection denied"** diye loglanır —
+yani bir *protokol* hatası, *yetkilendirme* hatası kılığında görünür.
+
+Çıkarılacak ders teknikten çok yöntemsel: mesh, hata mesajlarının
+katmanını kaydırır. Uygulama TLS hatası görür, proxy yetki hatası
+loglar, gerçek sebep bir Service alanındaki string'dir. Bu yüzden
+mesh'te teşhis, hipotezle değil **tek değişken değiştirerek** yapılır.
+
+### (d) Politika sırası (yine de doğru alışkanlık)
+
+Yukarıdaki arızanın sebebi olmadığı anlaşıldı ama `default-inbound-policy:
+deny` altında iş yükünü kuralsız açmak gereksiz bir yarış penceresi
+bırakır. `up.sh` bu yüzden namespace → politikalar → iş yükleri sırasını
+izliyor; Faz 6'nın konteyner adımındaki CRD sırası tuzağıyla aynı biçim.
+
+### (e) Enjektör hazır değilken açılan Pod sessizce meshsiz kalır
+
+`linkerd-proxy-injector` webhook'u `failurePolicy: Ignore` ile kurulur.
+Bu bilinçli bir tasarım — mesh çökerse küme çalışmaya devam etsin — ama
+sonucu şu: webhook henüz hazır değilken açılan Pod'lar **proxy'siz**
+açılır ve hiçbir yerde hata görünmez. Pod `Running`, uygulama çalışıyor,
+her şey yeşil; yalnızca mTLS yok.
+
+"Çalışıyor" ile "korunuyor" arasındaki farkı gösteren en iyi örnek bu.
+Kontrol tek satır:
+
+```bash
+kubectl -n shardlands get pod X -o jsonpath='{.spec.initContainers[*].name}'
+```
 
 ## 7. Ne ölçtük, ne kaybettik
 

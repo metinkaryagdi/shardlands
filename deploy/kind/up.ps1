@@ -36,23 +36,23 @@ Write-Host "==> CRD kuruluyor"
 kubectl apply -f operator/config/crd/
 kubectl wait --for=condition=Established --timeout=60s crd/arenas.shardlands.dev
 
-Write-Host "==> manifestler uygulanıyor"
-kubectl apply -f deploy/k8s/base/
-kubectl apply -f deploy/k8s/local/
+# SIRA ÖNEMLİ: namespace -> mesh politikalari -> is yukleri. Politikalar
+# sonra uygulanirsa "deny" altinda ayaga kalkmis proxy'ler reddetmeye
+# devam eder ve ancak yeniden baslatilinca duzelirler (yasanmis).
+Write-Host "==> namespace"
+kubectl apply -f deploy/k8s/base/00-namespace.yaml
 
-# Mesh politikaları yalnız Linkerd kuruluysa; mesh'siz kurulum da
-# geçerli bir çalışma biçimi.
 kubectl get crd servers.policy.linkerd.io 2>$null | Out-Null
 if ($?) {
     Write-Host "==> mesh politikaları uygulanıyor"
-    kubectl apply -f deploy/k8s/mesh/00-identities.yaml
-    kubectl apply -f deploy/k8s/mesh/10-policy-player.yaml
-    kubectl apply -f deploy/k8s/mesh/11-policy-arena.yaml
-    kubectl apply -f deploy/k8s/mesh/12-policy-nats.yaml
-    kubectl apply -f deploy/k8s/mesh/13-policy-hub.yaml
+    kubectl apply -f deploy/k8s/mesh/00-identities.yaml -f deploy/k8s/mesh/10-policy-player.yaml -f deploy/k8s/mesh/11-policy-arena.yaml -f deploy/k8s/mesh/12-policy-nats.yaml -f deploy/k8s/mesh/13-policy-hub.yaml
 } else {
     Write-Host "==> Linkerd kurulu degil, mesh politikalari atlandi"
 }
+
+Write-Host "==> manifestler uygulanıyor"
+kubectl apply -f deploy/k8s/base/
+kubectl apply -f deploy/k8s/local/
 
 Write-Host "==> hazır olunuyor"
 kubectl -n shardlands rollout status statefulset/nats --timeout=120s

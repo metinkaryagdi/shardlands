@@ -38,24 +38,34 @@ kubectl apply -f operator/config/crd/
 kubectl wait --for=condition=Established --timeout=60s \
   crd/arenas.shardlands.dev
 
-echo "==> manifestler uygulanıyor"
-kubectl apply -f deploy/k8s/base/
-kubectl apply -f deploy/k8s/local/
+# SIRA ÖNEMLİ: namespace → mesh politikaları → iş yükleri.
+#
+# Politikalar iş yüklerinden SONRA uygulanırsa, varsayılan "deny"
+# altında ayağa kalkmış proxy'ler bağlantıları reddetmeye devam eder ve
+# ancak yeniden başlatılınca düzelirler. Yaşanmış: hub→player çağrıları
+# "error reading server preface: EOF" ile düştü, politika doğru olduğu
+# halde. CRD tuzağının kardeşi — önce kural, sonra iş yükü.
+echo "==> namespace"
+kubectl apply -f deploy/k8s/base/00-namespace.yaml
 
 # Mesh politikaları YALNIZ Linkerd kuruluysa uygulanır. Kurulu değilse
 # CRD'leri olmadığı için apply hata verir; mesh'siz kurulum da geçerli
 # bir çalışma biçimi olduğu için bu adımı sessizce atlıyoruz.
 if kubectl get crd servers.policy.linkerd.io >/dev/null 2>&1; then
   echo "==> mesh politikaları uygulanıyor"
-  kubectl apply -f deploy/k8s/mesh/00-identities.yaml
-  kubectl apply -f deploy/k8s/mesh/10-policy-player.yaml
-  kubectl apply -f deploy/k8s/mesh/11-policy-arena.yaml
-  kubectl apply -f deploy/k8s/mesh/12-policy-nats.yaml
-  kubectl apply -f deploy/k8s/mesh/13-policy-hub.yaml
+  kubectl apply -f deploy/k8s/mesh/00-identities.yaml \
+    -f deploy/k8s/mesh/10-policy-player.yaml \
+    -f deploy/k8s/mesh/11-policy-arena.yaml \
+    -f deploy/k8s/mesh/12-policy-nats.yaml \
+    -f deploy/k8s/mesh/13-policy-hub.yaml
 else
   echo "==> Linkerd kurulu değil, mesh politikaları atlandı"
   echo "    (kurmak için: ./deploy/mesh/install.sh)"
 fi
+
+echo "==> manifestler uygulanıyor"
+kubectl apply -f deploy/k8s/base/
+kubectl apply -f deploy/k8s/local/
 
 echo "==> hazır olunuyor"
 kubectl -n shardlands rollout status statefulset/nats --timeout=120s
