@@ -1,11 +1,19 @@
-// Package matchmaking, Faz 1'de yalnızca kuyruk iskeletidir: oyuncular
-// moda göre sıraya girer, sıra numarası döner. Maç oluşturma (arena
-// provision + oyuncu atama atomikliği, saga ile) Faz 5'in konusu.
+// Package matchmaking, oyuncuları eşleştirir ve maç kurulumunu SAGA ile
+// yürütür.
+//
+// Atomiklik problemi: "arena instance'ı oluştur + oyuncuları ata" ya
+// tamamen olmalı ya hiç. Yarıda kalırsa ya boş arena sızar (kaynak
+// israfı) ya oyuncular kuyrukta kaybolur. Dağıtık transaction yok;
+// çözüm yine saga (bkz. services/trade) — adımlar + telafiler:
+//
+//	provision başarısız → oyuncular kuyruğa iade
+//	atama başarısız     → atananlar geri alınır, arena yıkılır, kuyruğa iade
+//
+// Saga'nın kendi event log'u (match-<id>) hem durumu hem denetim izidir.
 package matchmaking
 
 import (
 	"context"
-	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -13,37 +21,23 @@ import (
 	pb "shardlands/gen/shardlands/v1"
 )
 
-var validModes = map[string]bool{"1v1": true, "2v2": true}
-
+// Service, matchmaking gRPC uçtur; işi Matcher'a devreder.
 type Service struct {
 	pb.UnimplementedMatchmakingServiceServer
-
-	mu     sync.Mutex
-	queues map[string][]string // mode → sıradaki player id'ler
+	m *Matcher
 }
 
-func New() *Service {
-	return &Service{queues: map[string][]string{}}
-}
+func New(m *Matcher) *Service { return &Service{m: m} }
 
+// Enqueue, oyuncuyu kuyruğa alır ve sırasını döner. Yeterli oyuncu
+// birikince maç saga'sı arka planda başlar.
 func (s *Service) Enqueue(_ context.Context, req *pb.EnqueueRequest) (*pb.EnqueueResponse, error) {
 	if req.GetPlayerId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "player_id is required")
 	}
-	if !validModes[req.GetMode()] {
-		return nil, status.Errorf(codes.InvalidArgument, "unknown mode %q", req.GetMode())
+	pos, err := s.m.Enqueue(req.GetPlayerId(), req.GetMode())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	q := s.queues[req.GetMode()]
-	// İdempotent: zaten kuyruktaysa mevcut sırasını dön (istemci retry
-	// atabilir — Faz 0 Raft churn testinin öğrettiği ders).
-	for i, id := range q {
-		if id == req.GetPlayerId() {
-			return &pb.EnqueueResponse{Position: int32(i + 1)}, nil
-		}
-	}
-	s.queues[req.GetMode()] = append(q, req.GetPlayerId())
-	return &pb.EnqueueResponse{Position: int32(len(q) + 1)}, nil
+	return &pb.EnqueueResponse{Position: int32(pos)}, nil
 }

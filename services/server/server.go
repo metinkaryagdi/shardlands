@@ -47,21 +47,23 @@ type Config struct {
 type Server struct {
 	HTTPAddr string // gerçek adres (":0" çözülmüş hali)
 
-	httpSrv  *http.Server
-	grpcSrvs []*grpc.Server
-	conns    []*grpc.ClientConn
-	system   *actor.System
-	events   *es.Store
-	natsSrv  *bus.Embedded
-	bus      bus.Bus
-	relay    *outbox.Relay
-	chatHist *chat.History
-	inv      *inventory.Inventory
-	stats    *stats.Stats
-	router   *world.Router
-	shards   *shard.Manager
-	stopTick chan struct{}
-	stopOnce sync.Once
+	httpSrv     *http.Server
+	grpcSrvs    []*grpc.Server
+	conns       []*grpc.ClientConn
+	system      *actor.System
+	events      *es.Store
+	natsSrv     *bus.Embedded
+	bus         bus.Bus
+	relay       *outbox.Relay
+	chatHist    *chat.History
+	inv         *inventory.Inventory
+	stats       *stats.Stats
+	router      *world.Router
+	shards      *shard.Manager
+	matcher     *matchmaking.Matcher
+	provisioner *matchmaking.LocalProvisioner
+	stopTick    chan struct{}
+	stopOnce    sync.Once
 }
 
 // Router, CAP deneyi ve gözlem için shard router'ına erişim verir.
@@ -84,13 +86,6 @@ func Start(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.serveGRPC(cfg.MatchmakingAddr, func(gs *grpc.Server) {
-		pb.RegisterMatchmakingServiceServer(gs, matchmaking.New())
-	}); err != nil {
-		s.Stop()
-		return nil, err
-	}
-
 	// Gateway'in servis istemcileri.
 	playerConn, err := grpc.NewClient(playerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -106,6 +101,18 @@ func Start(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s.events = events
+
+	// Matchmaking: eşleştirici + yerel arena sağlayıcı. Event store
+	// hazır olduğu için saga'nın denetim izi (match-* stream'leri)
+	// baştan yazılır. Assigner Faz 5'in handoff adımında bağlanacak.
+	s.provisioner = matchmaking.NewLocalProvisioner()
+	s.matcher = matchmaking.NewMatcher(events, s.provisioner, nil)
+	if _, err := s.serveGRPC(cfg.MatchmakingAddr, func(gs *grpc.Server) {
+		pb.RegisterMatchmakingServiceServer(gs, matchmaking.New(s.matcher))
+	}); err != nil {
+		s.Stop()
+		return nil, err
+	}
 
 	// Faz 4: event bus (gömülü NATS) + OUTBOX RELAY. Yazma tek yere
 	// (event store) gider; relay store'u bus'a taşır; read model'ler
