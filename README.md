@@ -20,6 +20,9 @@ pkg/crdt/      Faz 2: G/PN-Counter CRDT                                ✅
 pkg/hashring/  Faz 3: consistent hashing (vnode'lu)                    ✅
 pkg/raftstore/ Faz 3: Raft Storage'ın LSM tabanlı kalıcı hâli          ✅
 pkg/dlock/     Faz 3: Raft üstünde lease+fencing dağıtık kilit         ✅
+pkg/bus/       Faz 4: event bus (NATS JetStream) + DLQ/backpressure    ✅
+pkg/resilience/Faz 4: circuit breaker + bulkhead                       ✅
+pkg/ratelimit/ Faz 4: token bucket (rate limit / load shedding)        ✅
 proto/         Faz 1: gRPC/Protobuf kontratları (buf ile codegen)      ✅
 gen/           Üretilen Go kodu (commit'li — araçsız build için)       ✅
 services/      Faz 1+: gateway, player, world, matchmaking, server     ✅
@@ -200,6 +203,40 @@ graph TD
   bölünmede tutarlılık, normalde gecikme.
 - **Sharding = ölçek + arıza yalıtımı.** Bir shard'ın izolasyonu
   diğerinin bölgelerini etkilemiyor; blast radius sınırlı.
+
+## Faz 4 — Mesajlaşma ve Dayanıklılık ✅
+
+| Parça | Notlar |
+|---|---|
+| Event bus | [pkg/bus](pkg/bus/bus.go) — NATS JetStream; ack/nak, yeniden teslim, **DLQ**, MaxInFlight ile backpressure |
+| Outbox relay | [services/outbox](services/outbox/outbox.go) — dual-write borcu kapandı; store tek yazma yeri, relay bus'a taşır |
+| Idempotency | [outbox.Consume](services/outbox/consume.go) — global sıra ile dedupe; at-least-once'ın karşılığı |
+| Circuit breaker + bulkhead | [pkg/resilience](pkg/resilience/breaker.go) — kaskad arıza gateway sınırında kesilir |
+| Rate limit / load shedding | [pkg/ratelimit](pkg/ratelimit/ratelimit.go) — token bucket; IP başına giriş, bağlantı başına komut |
+| Strangler fig | [docs/strangler-fig.md](docs/strangler-fig.md) — Faz 1'den bugüne önce/sonra |
+
+### Faz 4 kapanış — dersler
+
+- **Exactly-once teslim yoktur; idempotent tüketici vardır.** Bus
+  at-least-once verir; doğruluk, tüketicinin global sıra ile dedupe
+  etmesinden gelir. Yayın tarafı dedupe (Msg-Id) tekrarları *azaltır*,
+  garanti etmez.
+- **Outbox, dual-write'ın tek dürüst çözümü.** "Hem yaz hem yayınla"
+  iki sistem arasında atomiklik ister — yoktur. Tek yere yazıp
+  ayrı bir relay ile taşımak, kaybı gecikmeye çevirir.
+- **Zehirli mesaj akışı tıkamamalı.** MaxDeliver tükenince mesajı DLQ'ya
+  *taşımak* gerekir; JetStream'in max-deliver aşımı mesajı sessizce
+  düşürür — bir yere koymaz. Kararı kendimiz veriyoruz.
+- **In-memory read model = geçici tüketici.** Kalıcı tüketici kaldığı
+  yerden devam eder ve süreç yeniden başlayınca geçmiş kaybolur; akışı
+  baştan oynatan geçici tüketici doğrusudur.
+- **Bulkhead dışta, breaker içte.** Yük atmadan doğan hatalar
+  (ErrFull) bizim doymuşluğumuzdur; devre kesiciye yedirilirse sağlıklı
+  bir bağımlılık cezalandırılır. Aynı sebeple **istemci hataları**
+  (geçersiz girdi) devreyi açmamalı.
+- **Yük atmak bir hizmettir.** Hepsini kabul edip topluca çökmektense
+  fazlasını hızlıca reddetmek; `Retry-After` ile istemciye ne yapacağını
+  söylemek.
 
 ## Çalıştırma
 
