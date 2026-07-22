@@ -20,9 +20,11 @@ import (
 	"log"
 	"sync"
 
+	"shardlands/pkg/bus"
 	"shardlands/pkg/crdt"
 	"shardlands/pkg/es"
 	"shardlands/services/inventory"
+	"shardlands/services/outbox"
 )
 
 type Stats struct {
@@ -31,40 +33,34 @@ type Stats struct {
 	mu       sync.RWMutex
 	gathered *crdt.GCounter
 
-	stop chan struct{}
-	done chan struct{}
+	sub bus.Subscription
 }
 
-// New, projection'ı başlatır. nodeID, bu replikanın G-Counter
-// bileşeninin anahtarıdır (Faz 3'te shard başına farklı).
-func New(store *es.Store, nodeID string) *Stats {
-	s := &Stats{
-		nodeID:   nodeID,
-		gathered: crdt.NewGCounter(),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+// New, bus'tan tüketen projection'ı başlatır. nodeID, bu replikanın
+// G-Counter bileşeninin anahtarıdır (Faz 3'te shard başına farklı).
+func New(b bus.Bus, nodeID string) (*Stats, error) {
+	s := &Stats{nodeID: nodeID, gathered: crdt.NewGCounter()}
+	sub, err := outbox.Consume(b, "stats", s.apply)
+	if err != nil {
+		return nil, err
 	}
-	go func() {
-		defer close(s.done)
-		es.Project(store, s.stop, s.apply)
-	}()
-	return s
+	s.sub = sub
+	return s, nil
 }
 
-func (s *Stats) apply(evs []es.Event) {
+func (s *Stats) apply(e es.Event) error {
+	if e.Type != inventory.EventGathered {
+		return nil
+	}
+	var g inventory.Gathered
+	if err := json.Unmarshal(e.Data, &g); err != nil {
+		log.Printf("stats: bad gather event %d: %v", e.Global, err)
+		return nil
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, e := range evs {
-		if e.Type != inventory.EventGathered {
-			continue
-		}
-		var g inventory.Gathered
-		if err := json.Unmarshal(e.Data, &g); err != nil {
-			log.Printf("stats: bad gather event %d: %v", e.Global, err)
-			continue
-		}
-		s.gathered.Increment(s.nodeID, uint64(g.Amount))
-	}
+	s.gathered.Increment(s.nodeID, uint64(g.Amount))
+	s.mu.Unlock()
+	return nil
 }
 
 // TotalGathered, tüm zamanların toplam toplanan kaynak sayısı.
@@ -82,6 +78,7 @@ func (s *Stats) GatheredState() map[string]uint64 {
 }
 
 func (s *Stats) Close() {
-	close(s.stop)
-	<-s.done
+	if s.sub != nil {
+		s.sub.Stop()
+	}
 }

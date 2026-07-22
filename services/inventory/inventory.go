@@ -4,7 +4,9 @@ import (
 	"strings"
 	"sync"
 
+	"shardlands/pkg/bus"
 	"shardlands/pkg/es"
+	"shardlands/services/outbox"
 )
 
 // Inventory, envanterlerin READ MODEL'idir: inv-* stream'lerindeki tüm
@@ -12,46 +14,39 @@ import (
 // türetir. Envanterin "gerçeği" event log'dur; bu paket hızlı sorgu
 // için bir görünümdür ve her açılışta sıfırdan yeniden kurulur.
 type Inventory struct {
-	store *es.Store
-
 	mu   sync.RWMutex
 	bals map[string]*Balance // playerID → bakiye
 
-	stop chan struct{}
-	done chan struct{}
+	sub bus.Subscription
 }
 
-// New, projection'ı başlatır (arka planda event akışını izler).
-func New(store *es.Store) *Inventory {
-	inv := &Inventory{
-		store: store,
-		bals:  map[string]*Balance{},
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
+// New, bus'tan tüketen projection'ı başlatır (Faz 4: doğrudan event
+// store yerine event bus; at-least-once teslim, dedupe outbox.Consume'da).
+func New(b bus.Bus) (*Inventory, error) {
+	inv := &Inventory{bals: map[string]*Balance{}}
+	sub, err := outbox.Consume(b, "inventory", inv.apply)
+	if err != nil {
+		return nil, err
 	}
-	go func() {
-		defer close(inv.done)
-		es.Project(store, inv.stop, inv.apply)
-	}()
-	return inv
+	inv.sub = sub
+	return inv, nil
 }
 
-func (inv *Inventory) apply(evs []es.Event) {
+func (inv *Inventory) apply(e es.Event) error {
+	if !strings.HasPrefix(e.Stream, "inv-") {
+		return nil // log paylaşımlı: bizim olmayan stream'leri atla
+	}
+	playerID := strings.TrimPrefix(e.Stream, "inv-")
 	inv.mu.Lock()
 	defer inv.mu.Unlock()
-	for _, e := range evs {
-		if !strings.HasPrefix(e.Stream, "inv-") {
-			continue // log paylaşımlı: bizim olmayan stream'leri atla
-		}
-		playerID := strings.TrimPrefix(e.Stream, "inv-")
-		b := inv.bals[playerID]
-		if b == nil {
-			nb := newBalance()
-			b = &nb
-			inv.bals[playerID] = b
-		}
-		applyTo(b, e)
+	b := inv.bals[playerID]
+	if b == nil {
+		nb := newBalance()
+		b = &nb
+		inv.bals[playerID] = b
 	}
+	applyTo(b, e)
+	return nil
 }
 
 // Get, oyuncunun HARCANABİLİR (available) bakiyesinin kopyasını döner.
@@ -86,8 +81,9 @@ func (inv *Inventory) Reserved(playerID string) map[string]int {
 	return out
 }
 
-// Close, projection'ı durdurur ve bitmesini bekler.
+// Close, projection'ı durdurur.
 func (inv *Inventory) Close() {
-	close(inv.stop)
-	<-inv.done
+	if inv.sub != nil {
+		inv.sub.Stop()
+	}
 }

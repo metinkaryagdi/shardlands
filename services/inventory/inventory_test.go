@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"shardlands/internal/testenv"
 	"shardlands/pkg/es"
 )
 
@@ -37,30 +38,34 @@ func gather(t *testing.T, s *es.Store, playerID, kind string, amount int) {
 
 func waitAvail(t *testing.T, inv *Inventory, playerID, kind string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if inv.Get(playerID)[kind] == want {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("%s/%s never reached %d (have %v)", playerID, kind, want, inv.Get(playerID))
 }
 
-// Read model: catch-up + canlı akış; oyuncular/türler ayrı; ilgisiz
-// stream'ler yok sayılır.
+// Read model artık BUS'tan tüketiyor: baştan oynatma (catch-up) + canlı
+// akış; oyuncular/türler ayrı; ilgisiz stream'ler yok sayılır.
 func TestReadModelCounts(t *testing.T) {
-	s := testStore(t)
-	gather(t, s, "p-1", "wood", 1) // projection başlamadan
+	env := testenv.New(t)
+	gather(t, env.Store, "p-1", "wood", 1) // projection başlamadan
+	env.WaitDelivered(t)
 
-	inv := New(s)
+	inv, err := New(env.Bus)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer inv.Close()
 	waitAvail(t, inv, "p-1", "wood", 1)
 
-	gather(t, s, "p-1", "wood", 1)
-	gather(t, s, "p-1", "crystal", 1)
-	gather(t, s, "p-2", "wood", 1)
-	s.Append("chat", es.AnyVersion, es.EventData{Type: "ChatSaid", Data: []byte(`{}`)}) // gürültü
+	gather(t, env.Store, "p-1", "wood", 1)
+	gather(t, env.Store, "p-1", "crystal", 1)
+	gather(t, env.Store, "p-2", "wood", 1)
+	env.Store.Append("chat", es.AnyVersion, es.EventData{Type: "ChatSaid", Data: []byte(`{}`)}) // gürültü
 
 	waitAvail(t, inv, "p-1", "wood", 2)
 	waitAvail(t, inv, "p-1", "crystal", 1)

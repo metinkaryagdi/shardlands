@@ -49,7 +49,7 @@ func publish(t *testing.T, b bus.Bus, id, body string) {
 func TestPublishSubscribe(t *testing.T) {
 	b := testBus(t)
 	got := make(chan string, 8)
-	sub, err := b.Subscribe(bus.SubscribeOptions{Durable: "basic"}, func(_ context.Context, m bus.Message) error {
+	sub, err := b.Subscribe(bus.SubscribeOptions{Durable: true, Name: "basic"}, func(_ context.Context, m bus.Message) error {
 		got <- string(m.Data)
 		return nil
 	})
@@ -77,7 +77,8 @@ func TestRedeliveryUntilSuccess(t *testing.T) {
 	done := make(chan int, 4)
 
 	sub, err := b.Subscribe(bus.SubscribeOptions{
-		Durable:    "retry",
+		Name:       "retry",
+		Durable:    true,
 		MaxDeliver: 10,
 		AckWait:    2 * time.Second,
 		Backoff:    func(int) time.Duration { return 50 * time.Millisecond },
@@ -121,7 +122,8 @@ func TestPoisonMessageGoesToDLQ(t *testing.T) {
 
 	good := make(chan string, 4)
 	sub, err := b.Subscribe(bus.SubscribeOptions{
-		Durable:    "poison",
+		Name:       "poison",
+		Durable:    true,
 		MaxDeliver: 3,
 		AckWait:    time.Second,
 		Backoff:    func(int) time.Duration { return 20 * time.Millisecond },
@@ -164,7 +166,7 @@ func TestPoisonMessageGoesToDLQ(t *testing.T) {
 func TestDurableResumesAfterStop(t *testing.T) {
 	b := testBus(t)
 	first := make(chan string, 8)
-	sub, err := b.Subscribe(bus.SubscribeOptions{Durable: "resume"}, func(_ context.Context, m bus.Message) error {
+	sub, err := b.Subscribe(bus.SubscribeOptions{Durable: true, Name: "resume"}, func(_ context.Context, m bus.Message) error {
 		first <- string(m.Data)
 		return nil
 	})
@@ -184,7 +186,7 @@ func TestDurableResumesAfterStop(t *testing.T) {
 	publish(t, b, "d3", "üç")
 
 	second := make(chan string, 8)
-	sub2, err := b.Subscribe(bus.SubscribeOptions{Durable: "resume"}, func(_ context.Context, m bus.Message) error {
+	sub2, err := b.Subscribe(bus.SubscribeOptions{Durable: true, Name: "resume"}, func(_ context.Context, m bus.Message) error {
 		second <- string(m.Data)
 		return nil
 	})
@@ -213,7 +215,7 @@ func TestDurableResumesAfterStop(t *testing.T) {
 func TestPublishDedupeByMsgID(t *testing.T) {
 	b := testBus(t)
 	var count atomic.Int32
-	sub, err := b.Subscribe(bus.SubscribeOptions{Durable: "dedupe"}, func(_ context.Context, m bus.Message) error {
+	sub, err := b.Subscribe(bus.SubscribeOptions{Durable: true, Name: "dedupe"}, func(_ context.Context, m bus.Message) error {
 		count.Add(1)
 		return nil
 	})
@@ -242,7 +244,8 @@ func TestMaxInFlightLimitsConcurrency(t *testing.T) {
 	release := make(chan struct{})
 
 	sub, err := b.Subscribe(bus.SubscribeOptions{
-		Durable:     "inflight",
+		Name:        "inflight",
+		Durable:     true,
 		MaxInFlight: limit,
 		AckWait:     30 * time.Second,
 	}, func(_ context.Context, m bus.Message) error {

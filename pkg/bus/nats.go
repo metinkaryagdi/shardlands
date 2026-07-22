@@ -136,8 +136,8 @@ func (s *natsSub) Stop() {
 
 func (b *natsBus) Subscribe(opts SubscribeOptions, h Handler) (Subscription, error) {
 	opts.withDefaults()
-	if opts.Durable == "" {
-		return nil, fmt.Errorf("bus: Durable is required")
+	if opts.Name == "" {
+		return nil, fmt.Errorf("bus: Name is required")
 	}
 	filter := opts.Filter
 	if filter == "" {
@@ -146,22 +146,32 @@ func (b *natsBus) Subscribe(opts SubscribeOptions, h Handler) (Subscription, err
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cons, err := b.str.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-		Durable:       opts.Durable,
+	cfg := jetstream.ConsumerConfig{
 		FilterSubject: filter,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       opts.AckWait,
+		// Akışı baştan oynat: kalıcı tüketicide yalnız ilk kurulumda
+		// geçerlidir, geçicide her seferinde.
+		DeliverPolicy: jetstream.DeliverAllPolicy,
 		// MaxDeliver'ı bus'ın kendisinde SINIRSIZ bırakıp DLQ kararını
 		// kendimiz veriyoruz: böylece "vazgeçtim" anında mesajı DLQ'ya
 		// TAŞIYABİLİYORUZ (JetStream'de max-deliver aşımı mesajı
 		// sessizce düşürür, bir yere koymaz).
 		MaxAckPending: opts.MaxInFlight,
-	})
+	}
+	if opts.Durable {
+		cfg.Durable = opts.Name
+	} else {
+		// Geçici tüketici: adı NATS üretir, boşta kalınca temizlenir.
+		cfg.InactiveThreshold = 5 * time.Minute
+	}
+
+	cons, err := b.str.CreateOrUpdateConsumer(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	dlqSubject := dlqPrefix + sanitize(opts.Durable)
+	dlqSubject := dlqPrefix + sanitize(opts.Name)
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
 		md, mdErr := msg.Metadata()
 		deliveries := 1

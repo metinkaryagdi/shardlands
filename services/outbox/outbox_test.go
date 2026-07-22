@@ -65,7 +65,8 @@ func (f *fixture) collect(t *testing.T, durable string) (*sync.Mutex, *[]Envelop
 	var mu sync.Mutex
 	got := []Envelope{}
 	sub, err := f.b.Subscribe(bus.SubscribeOptions{
-		Durable:     durable,
+		Name:        durable,
+		Durable:     true,
 		MaxInFlight: 1, // sıralı teslim (stream sırası korunur)
 	}, func(_ context.Context, m bus.Message) error {
 		env, err := Decode(m.Data)

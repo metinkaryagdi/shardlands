@@ -38,11 +38,19 @@ type Message struct {
 // teslim (MaxDeliver'a kadar), sonra DLQ.
 type Handler func(ctx context.Context, m Message) error
 
-// SubscribeOptions, dayanıklı tüketici ayarları.
+// SubscribeOptions, tüketici ayarları.
 type SubscribeOptions struct {
-	// Durable, tüketicinin kalıcı adı: aynı adla yeniden bağlanınca
-	// kaldığı yerden devam eder (checkpoint bus'ta tutulur).
-	Durable string
+	// Name, tüketicinin adı (DLQ konusu ve kalıcı tüketici kimliği).
+	Name string
+	// Durable:
+	//   true  → kalıcı tüketici: kaldığı yerden devam eder (checkpoint
+	//           bus'ta). Durumu KENDİ persist eden tüketiciler için.
+	//   false → geçici (ephemeral) tüketici: her başlangıçta akışı
+	//           BAŞTAN oynatır. IN-MEMORY read model'ler bunu ister —
+	//           süreç yeniden başlayınca model sıfırdan kurulmalı;
+	//           kalıcı tüketici olsaydı yalnız yeni event'ler gelir ve
+	//           geçmiş kaybolurdu.
+	Durable bool
 	// Filter, dinlenecek konu deseni (boşsa stream'in tamamı).
 	Filter string
 	// MaxDeliver, bir mesaj için toplam teslim denemesi (varsayılan 5).

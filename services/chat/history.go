@@ -1,13 +1,13 @@
 // Package chat, sohbet geçmişinin READ MODEL'idir (CQRS'in sorgu
 // tarafı). Yazı yolu (world aktörü ChatSaid event'i basar) ile okuma
-// yolu (bu projection + HTTP endpoint) tamamen ayrıdır; ikisini
-// yalnızca event log bağlar.
+// yolu (bu projection + HTTP endpoint) tamamen ayrıdır.
 //
-// Projection deseni: checkpoint'ten itibaren oku → uygula → sinyal
-// bekle → tekrar. Read model her an sıfırdan yeniden kurulabilir
-// (checkpoint=0'dan replay) — bu, event sourcing'in "durum türetilir,
-// kaybolabilir" vaadinin somut hali. Süreç içi tek eksiği: göz açıp
-// kapayana kadarlık gecikme (eventual consistency).
+// Faz 4'te akış kaynağı DEĞİŞTİ: artık event store'a doğrudan abone
+// değil, EVENT BUS'tan tüketiyor (outbox relay store'u bus'a taşıyor).
+// Kazanç: üretici ile tüketici ayrıştı — bu read model başka bir
+// süreçte/serviste çalışabilir. Bedeli: at-least-once teslim, bu yüzden
+// uygulama idempotent olmalı (outbox.Consume global sıra ile dedupe
+// eder).
 package chat
 
 import (
@@ -15,7 +15,9 @@ import (
 	"log"
 	"sync"
 
+	"shardlands/pkg/bus"
 	"shardlands/pkg/es"
+	"shardlands/services/outbox"
 	"shardlands/services/world"
 )
 
@@ -31,52 +33,43 @@ type Message struct {
 }
 
 type History struct {
-	store *es.Store
-
 	mu   sync.RWMutex
 	msgs []Message
 
-	stop chan struct{}
-	done chan struct{}
+	sub bus.Subscription
 }
 
-// NewHistory, projection'ı başlatır (arka planda event akışını izler).
-func NewHistory(store *es.Store) *History {
-	h := &History{
-		store: store,
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
+// NewHistory, bus'tan tüketen projection'ı başlatır.
+func NewHistory(b bus.Bus) (*History, error) {
+	h := &History{}
+	sub, err := outbox.Consume(b, "chat-history", h.apply)
+	if err != nil {
+		return nil, err
 	}
-	go h.run()
-	return h
+	h.sub = sub
+	return h, nil
 }
 
-func (h *History) run() {
-	defer close(h.done)
-	es.Project(h.store, h.stop, h.apply)
-}
-
-func (h *History) apply(evs []es.Event) {
+func (h *History) apply(e es.Event) error {
+	// Log paylaşımlı: yalnızca ilgilendiğimiz event'i işle.
+	if e.Stream != world.ChatStream || e.Type != world.EventChatSaid {
+		return nil
+	}
+	var said world.ChatSaid
+	if err := json.Unmarshal(e.Data, &said); err != nil {
+		// Bozuk veri kalıcı hatadır; yeniden denemek düzeltmez.
+		log.Printf("chat history: bad event %d: %v", e.Global, err)
+		return nil
+	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, e := range evs {
-		// Log paylaşımlı: yalnızca kendi ilgilendiğimiz event'leri işle,
-		// gerisini yok say — her projection kendi süzgecini taşır.
-		if e.Stream != world.ChatStream || e.Type != world.EventChatSaid {
-			continue
-		}
-		var said world.ChatSaid
-		if err := json.Unmarshal(e.Data, &said); err != nil {
-			log.Printf("chat history: bad event %d: %v", e.Global, err)
-			continue
-		}
-		h.msgs = append(h.msgs, Message{
-			PlayerID: said.PlayerID, Name: said.Name, Text: said.Text, At: e.At,
-		})
-		if len(h.msgs) > maxKeep {
-			h.msgs = h.msgs[len(h.msgs)-maxKeep:]
-		}
+	h.msgs = append(h.msgs, Message{
+		PlayerID: said.PlayerID, Name: said.Name, Text: said.Text, At: e.At,
+	})
+	if len(h.msgs) > maxKeep {
+		h.msgs = h.msgs[len(h.msgs)-maxKeep:]
 	}
+	h.mu.Unlock()
+	return nil
 }
 
 // Recent, en yeni n mesajı (eski→yeni sırayla) döner.
@@ -89,8 +82,9 @@ func (h *History) Recent(n int) []Message {
 	return append([]Message(nil), h.msgs[len(h.msgs)-n:]...)
 }
 
-// Close, projection'ı durdurur ve bitmesini bekler.
+// Close, projection'ı durdurur.
 func (h *History) Close() {
-	close(h.stop)
-	<-h.done
+	if h.sub != nil {
+		h.sub.Stop()
+	}
 }

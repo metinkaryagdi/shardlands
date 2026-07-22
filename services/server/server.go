@@ -19,11 +19,13 @@ import (
 
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/pkg/actor"
+	"shardlands/pkg/bus"
 	"shardlands/pkg/es"
 	"shardlands/services/chat"
 	"shardlands/services/gateway"
 	"shardlands/services/inventory"
 	"shardlands/services/matchmaking"
+	"shardlands/services/outbox"
 	"shardlands/services/player"
 	"shardlands/services/shard"
 	"shardlands/services/stats"
@@ -50,6 +52,9 @@ type Server struct {
 	conns    []*grpc.ClientConn
 	system   *actor.System
 	events   *es.Store
+	natsSrv  *bus.Embedded
+	bus      bus.Bus
+	relay    *outbox.Relay
 	chatHist *chat.History
 	inv      *inventory.Inventory
 	stats    *stats.Stats
@@ -101,9 +106,42 @@ func Start(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s.events = events
-	s.chatHist = chat.NewHistory(events)
-	s.inv = inventory.New(events)
-	s.stats = stats.New(events, "world-0") // Faz 3: shard başına ayrı nodeID
+
+	// Faz 4: event bus (gömülü NATS) + OUTBOX RELAY. Yazma tek yere
+	// (event store) gider; relay store'u bus'a taşır; read model'ler
+	// bus'tan tüketir. Dual-write yok, at-least-once var.
+	nsrv, err := bus.StartEmbedded(filepath.Join(cfg.DataDir, "nats"))
+	if err != nil {
+		s.Stop()
+		return nil, err
+	}
+	s.natsSrv = nsrv
+	b, err := bus.Connect(nsrv.URL())
+	if err != nil {
+		s.Stop()
+		return nil, err
+	}
+	s.bus = b
+	relay, err := outbox.Open(events, b, filepath.Join(cfg.DataDir, "outbox"))
+	if err != nil {
+		s.Stop()
+		return nil, err
+	}
+	relay.Start()
+	s.relay = relay
+
+	if s.chatHist, err = chat.NewHistory(b); err != nil {
+		s.Stop()
+		return nil, err
+	}
+	if s.inv, err = inventory.New(b); err != nil {
+		s.Stop()
+		return nil, err
+	}
+	if s.stats, err = stats.New(b, "world-0"); err != nil { // Faz 3: shard başına ayrı nodeID
+		s.Stop()
+		return nil, err
+	}
 	trades := trade.NewOrchestrator(events)
 
 	// Dünya: bölgelere ayrılmış, consistent hashing ile shard'lara atanmış
@@ -208,6 +246,16 @@ func (s *Server) stop() {
 	}
 	if s.shards != nil {
 		s.shards.Stop()
+	}
+	// Bus zinciri ters sırayla: tüketiciler → relay → bağlantı → sunucu.
+	if s.relay != nil {
+		s.relay.Close()
+	}
+	if s.bus != nil {
+		s.bus.Close()
+	}
+	if s.natsSrv != nil {
+		s.natsSrv.Shutdown()
 	}
 	if s.events != nil {
 		s.events.Close()
