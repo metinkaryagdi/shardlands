@@ -53,6 +53,7 @@
 const $ = id => document.getElementById(id);
 const canvas = $("c"), ctx = canvas.getContext("2d");
 let me = null, players = [], nodes = [], tick = 0, inventory = {};
+let region = "", shard = "", cols = 2, rows = 2;
 const KIND_TR = { wood: "odun", crystal: "kristal" };
 
 async function join() {
@@ -105,8 +106,11 @@ async function join() {
   ws.onclose = () => { $("hud").textContent = "bağlantı koptu"; };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
-    if (m.type === "welcome") { me = m.id; refreshInventory(); setInterval(refreshInventory, 3000); }
-    else if (m.type === "snapshot") { tick = m.tick; players = m.players; nodes = m.nodes || []; draw(); }
+    if (m.type === "welcome") { me = m.id; cols = m.cols || 2; rows = m.rows || 2; refreshInventory(); setInterval(refreshInventory, 3000); }
+    else if (m.type === "snapshot") {
+      tick = m.tick; players = m.players; nodes = m.nodes || [];
+      region = m.region || ""; shard = m.shard || ""; draw();
+    }
   };
 
   // Girdi: basılı tuş DURUMU gönderilir (pozisyon değil — sunucu
@@ -154,6 +158,19 @@ function draw() {
   for (let y = 0; y <= canvas.height; y += 50) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
   }
+  // Bölge sınırları (grid hücreleri): kalın çizgiler.
+  ctx.strokeStyle = "rgba(31,111,235,0.35)";
+  ctx.lineWidth = 2;
+  for (let c = 1; c < cols; c++) {
+    const x = c * canvas.width / cols;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+  }
+  for (let r = 1; r < rows; r++) {
+    const y = r * canvas.height / rows;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+  }
+  ctx.lineWidth = 1;
+
   for (const n of nodes) drawNode(n);
   for (const p of players) {
     const self = p.id === me;
@@ -169,6 +186,9 @@ function draw() {
     ctx.fillText(p.name, p.x, p.y - 22);
     if (p.bubble) drawBubble(p);
   }
+  const loc = region ? ` · bölge ${region} @ ${shard}` : "";
+  $("hud").textContent = `tick ${tick}${loc} · bu bölgede ${players.length} oyuncu${invText()}`;
+  refreshPartners();
 }
 
 function drawNode(n) {
@@ -248,7 +268,7 @@ async function refreshChatLog() {
 function refreshPartners() {
   const sel = $("partner");
   const others = players.filter(p => p.id !== me);
-  const wanted = others.map(p => `${p.id} ${p.name}`).join("|");
+  const wanted = others.map(p => `${p.id} ${p.name}`).join("|");
   if (sel.dataset.sig === wanted) return; // değişmediyse dokunma (seçim korunur)
   sel.dataset.sig = wanted;
   const prev = sel.value;
@@ -258,8 +278,6 @@ function refreshPartners() {
 
 function escapeHTML(s) {
   return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  $("hud").textContent = `tick ${tick} · ${players.length} oyuncu çevrimiçi${invText()}`;
-  refreshPartners();
 }
 
 $("go").onclick = join;

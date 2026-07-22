@@ -38,7 +38,7 @@ type Config struct {
 	Secret    []byte
 	ClientDir string // statik istemci dosyaları (index.html)
 	System    *actor.System
-	World     *actor.Ref
+	Router    *world.Router
 	Players   pb.PlayerServiceClient
 	Chat      *chat.History        // sohbet read model'i (sorgu tarafı)
 	Inventory *inventory.Inventory // envanter read model'i
@@ -211,7 +211,7 @@ func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
 		MailboxSize: 16,
 		Overflow:    actor.DropNewest, // yavaş istemci: kare düşür, dünyayı bekletme
 		Producer: func() actor.Actor {
-			return &session{conn: conn, world: g.cfg.World, id: claims.Sub, name: claims.Name}
+			return &session{conn: conn, router: g.cfg.Router, id: claims.Sub, name: claims.Name}
 		},
 	})
 	if err != nil {
@@ -251,17 +251,30 @@ func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// session, WS bağlantısının aktörüdür. Faz 3'te oyuncu bir BÖLGEYE aittir
+// ve region ref'i handoff ile değişir; session bu ref'i takip eder ve
+// input'u güncel bölgeye yönlendirir.
 type session struct {
 	conn     *websocket.Conn
-	world    *actor.Ref
+	router   *world.Router
+	region   *actor.Ref // güncel bölge (handoff'ta güncellenir)
+	regionID string
+	shard    string
 	id, name string
 }
 
 func (s *session) PreStart(ctx *actor.Context) {
-	ctx.Send(s.world, world.Join{PlayerID: s.id, Name: s.name, Session: ctx.Self()})
+	// Merkeze yakın bir noktada doğ; bölgeyi router seçer.
+	rid, shard, ref := s.router.SpawnRegion(world.Width/2, world.Height/2)
+	s.region, s.regionID, s.shard = ref, rid, shard
+	ctx.Send(ref, world.Join{
+		PlayerID: s.id, Name: s.name, Session: ctx.Self(),
+		X: world.Width / 2, Y: world.Height / 2,
+	})
 	s.write(ctx, map[string]any{
 		"type": "welcome", "id": s.id, "name": s.name,
 		"w": world.Width, "h": world.Height, "tickRate": world.TickRate,
+		"cols": world.Cols, "rows": world.Rows,
 	})
 }
 
@@ -276,15 +289,19 @@ func (s *session) Receive(ctx *actor.Context) {
 		for i, n := range m.Nodes {
 			nodes[i] = map[string]any{"id": n.ID, "kind": n.Kind, "x": n.X, "y": n.Y, "available": n.Available}
 		}
-		s.write(ctx, map[string]any{"type": "snapshot", "tick": m.Tick, "players": players, "nodes": nodes})
+		s.write(ctx, map[string]any{"type": "snapshot", "tick": m.Tick,
+			"region": m.RegionID, "shard": m.Shard, "players": players, "nodes": nodes})
+	case world.AssignedRegion:
+		// Handoff: bundan sonra input yeni bölgeye gider.
+		s.region, s.regionID, s.shard = m.Ref, m.RegionID, m.Shard
 	case clientMsg:
 		switch m.Type {
 		case "chat":
-			ctx.Send(s.world, world.Chat{PlayerID: s.id, Text: m.Text})
+			ctx.Send(s.region, world.Chat{PlayerID: s.id, Text: m.Text})
 		case "gather":
-			ctx.Send(s.world, world.Gather{PlayerID: s.id})
+			ctx.Send(s.region, world.Gather{PlayerID: s.id})
 		default: // "input"
-			ctx.Send(s.world, world.Input{
+			ctx.Send(s.region, world.Input{
 				PlayerID: s.id,
 				Up:       m.Up, Down: m.Down, Left: m.Left, Right: m.Right,
 			})
@@ -292,11 +309,11 @@ func (s *session) Receive(ctx *actor.Context) {
 	}
 }
 
-// PostStop: bağlantı hangi yoldan koparsa kopsun (okuma hatası, yazma
-// hatası, sistem kapanışı) dünyadan ayrıl ve soketi kapat — tek çıkış
-// noktası. Leave idempotent olduğu için çifte tetiklenme zararsız.
+// PostStop: bağlantı hangi yoldan koparsa kopsun güncel bölgeden ayrıl ve
+// soketi kapat. Leave idempotent; handoff sırasında kopsa bile en fazla
+// eski bölgeye zararsız bir Leave gider.
 func (s *session) PostStop(ctx *actor.Context) {
-	ctx.Send(s.world, world.Leave{PlayerID: s.id})
+	ctx.Send(s.region, world.Leave{PlayerID: s.id})
 	s.conn.Close()
 }
 

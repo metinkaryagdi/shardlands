@@ -36,7 +36,8 @@ type Config struct {
 	MatchmakingAddr string
 	Secret          []byte
 	ClientDir       string
-	DataDir         string // event store'un yaşadığı dizin
+	DataDir         string   // event store'un yaşadığı dizin
+	Shards          []string // shard node id'leri (boşsa iki node varsayılan)
 }
 
 type Server struct {
@@ -50,12 +51,19 @@ type Server struct {
 	chatHist *chat.History
 	inv      *inventory.Inventory
 	stats    *stats.Stats
+	router   *world.Router
 	stopTick chan struct{}
 	stopOnce sync.Once
 }
 
+// Router, CAP deneyi ve gözlem için shard router'ına erişim verir.
+func (s *Server) Router() *world.Router { return s.router }
+
 // Start, tüm bileşenleri ayağa kaldırır ve dinlemeye başlar.
 func Start(cfg Config) (*Server, error) {
+	if len(cfg.Shards) == 0 {
+		cfg.Shards = []string{"shard-0", "shard-1"}
+	}
 	s := &Server{stopTick: make(chan struct{})}
 
 	// İç servisler: gerçek gRPC sunucuları (in-process ama ağ üstünde).
@@ -92,13 +100,15 @@ func Start(cfg Config) (*Server, error) {
 	s.stats = stats.New(events, "world-0") // Faz 3: shard başına ayrı nodeID
 	trades := trade.NewOrchestrator(events)
 
-	// Dünya: aktör + dış tick zamanlayıcısı.
+	// Dünya: bölgelere ayrılmış, consistent hashing ile shard'lara atanmış
+	// bölge aktörleri + dış tick zamanlayıcısı (tüm bölgelere).
 	s.system = actor.NewSystem("shardlands")
-	worldRef, err := s.system.Spawn(world.Props(events))
+	router, err := world.NewHub(s.system, events, cfg.Shards)
 	if err != nil {
 		s.Stop()
 		return nil, err
 	}
+	s.router = router
 	go func() {
 		t := time.NewTicker(time.Second / world.TickRate)
 		defer t.Stop()
@@ -107,7 +117,9 @@ func Start(cfg Config) (*Server, error) {
 			case <-s.stopTick:
 				return
 			case <-t.C:
-				worldRef.Send(world.Tick{})
+				for _, ref := range router.Refs() {
+					ref.Send(world.Tick{})
+				}
 			}
 		}
 	}()
@@ -123,7 +135,7 @@ func Start(cfg Config) (*Server, error) {
 		Secret:    cfg.Secret,
 		ClientDir: cfg.ClientDir,
 		System:    s.system,
-		World:     worldRef,
+		Router:    router,
 		Players:   pb.NewPlayerServiceClient(playerConn),
 		Chat:      s.chatHist,
 		Inventory: s.inv,

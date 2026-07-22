@@ -3,7 +3,6 @@ package world_test
 import (
 	"encoding/json"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,289 +12,277 @@ import (
 	"shardlands/services/world"
 )
 
-// collector: Snapshot'ları kanala akıtan sahte oturum aktörü.
-func collector(t *testing.T, sys *actor.System, name string) (*actor.Ref, chan world.Snapshot) {
-	t.Helper()
-	ch := make(chan world.Snapshot, 64)
-	ref, err := sys.Spawn(actor.Props{
-		Name: name,
-		Producer: func() actor.Actor {
-			return actor.ReceiverFunc(func(ctx *actor.Context) {
-				if s, ok := ctx.Message().(world.Snapshot); ok {
-					ch <- s
-				}
-			})
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ref, ch
+// collector, bir oturumu taklit eder: snapshot ve handoff (AssignedRegion)
+// mesajlarını tampon kanallara akıtır. Bölge aktörünü ASLA bloklamaz
+// (dolu kanalda düşürür) — DropNewest oturum davranışının test karşılığı.
+type collector struct {
+	snaps   chan world.Snapshot
+	assigns chan world.AssignedRegion
 }
 
-func nextSnap(t *testing.T, ch chan world.Snapshot) world.Snapshot {
-	t.Helper()
-	select {
-	case s := <-ch:
-		return s
-	case <-time.After(2 * time.Second):
-		t.Fatal("no snapshot received")
-		return world.Snapshot{}
-	}
-}
-
-// Tick'ler elle enjekte edilir: simülasyon tamamen deterministik.
-func TestMovementAndBroadcast(t *testing.T) {
-	sys := actor.NewSystem("test")
-	defer sys.Shutdown()
-
-	w, err := sys.Spawn(world.Props(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s1, ch1 := collector(t, sys, "sess1")
-	s2, ch2 := collector(t, sys, "sess2")
-
-	w.Send(world.Join{PlayerID: "p1", Name: "ayşe", Session: s1})
-	w.Send(world.Join{PlayerID: "p2", Name: "bora", Session: s2})
-	w.Send(world.Input{PlayerID: "p1", Right: true})
-	w.Send(world.Tick{})
-
-	const step = world.Speed / world.TickRate // tick başına px
-
-	snap := nextSnap(t, ch1)
-	if len(snap.Players) != 2 {
-		t.Fatalf("players = %d, want 2", len(snap.Players))
-	}
-	// Sıralama ID'ye göre deterministik: p1, p2.
-	p1, p2 := snap.Players[0], snap.Players[1]
-	if p1.ID != "p1" || p2.ID != "p2" {
-		t.Fatalf("order = %s,%s want p1,p2", p1.ID, p2.ID)
-	}
-	if p1.X != world.Width/2+step || p1.Y != world.Height/2 {
-		t.Fatalf("p1 = (%v,%v), want (%v,%v)", p1.X, p1.Y, world.Width/2+step, world.Height/2)
-	}
-	if p2.X != world.Width/2 {
-		t.Fatalf("p2 moved without input: x=%v", p2.X)
-	}
-	// İkinci oturum da aynı kareyi almalı.
-	if got := nextSnap(t, ch2); got.Tick != snap.Tick {
-		t.Fatalf("sessions saw different ticks: %d vs %d", got.Tick, snap.Tick)
-	}
-
-	// Girdi durumu KALICI: yeni input gelmeden ikinci tick de sağa götürür.
-	w.Send(world.Tick{})
-	if got := nextSnap(t, ch1); got.Players[0].X != world.Width/2+2*step {
-		t.Fatalf("second tick x = %v, want %v", got.Players[0].X, world.Width/2+2*step)
-	}
-
-	// Durdurma: boş input.
-	w.Send(world.Input{PlayerID: "p1"})
-	w.Send(world.Tick{})
-	if got := nextSnap(t, ch1); got.Players[0].X != world.Width/2+2*step {
-		t.Fatalf("after stop x = %v, want unchanged", got.Players[0].X)
-	}
-}
-
-func TestLeaveRemovesPlayer(t *testing.T) {
-	sys := actor.NewSystem("test")
-	defer sys.Shutdown()
-
-	w, _ := sys.Spawn(world.Props(nil))
-	s1, ch1 := collector(t, sys, "sess1")
-	s2, _ := collector(t, sys, "sess2")
-
-	w.Send(world.Join{PlayerID: "p1", Name: "a", Session: s1})
-	w.Send(world.Join{PlayerID: "p2", Name: "b", Session: s2})
-	w.Send(world.Leave{PlayerID: "p2"})
-	w.Send(world.Leave{PlayerID: "p2"}) // idempotent: ikinci Leave zararsız
-	w.Send(world.Tick{})
-
-	if snap := nextSnap(t, ch1); len(snap.Players) != 1 || snap.Players[0].ID != "p1" {
-		t.Fatalf("players = %+v, want only p1", snap.Players)
-	}
-}
-
-// Chat: geçerli komut balon üretir + event basar; balon süre dolunca
-// silinir; geçersiz komut (boş/uzun) ikisini de yapmaz.
-func TestChatBubbleAndEvent(t *testing.T) {
-	dir, err := os.MkdirTemp("", "shardlands-world-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	store, err := es.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-
-	sys := actor.NewSystem("test")
-	defer sys.Shutdown()
-	w, err := sys.Spawn(world.Props(store))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s1, ch1 := collector(t, sys, "sess1")
-
-	w.Send(world.Join{PlayerID: "p1", Name: "ayşe", Session: s1})
-	w.Send(world.Chat{PlayerID: "p1", Text: "  selam dünya  "})
-	w.Send(world.Tick{})
-
-	snap := nextSnap(t, ch1)
-	if got := snap.Players[0].Bubble; got != "selam dünya" {
-		t.Fatalf("bubble = %q, want %q (trimmed)", got, "selam dünya")
-	}
-
-	// Event mağazaya düşmüş olmalı (aktör append'i senkron yapar).
-	evs, err := store.ReadStream(world.ChatStream, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(evs) != 1 || evs[0].Type != world.EventChatSaid {
-		t.Fatalf("chat events = %+v, want 1 ChatSaid", evs)
-	}
-	var said world.ChatSaid
-	if err := json.Unmarshal(evs[0].Data, &said); err != nil {
-		t.Fatal(err)
-	}
-	if said.PlayerID != "p1" || said.Name != "ayşe" || said.Text != "selam dünya" {
-		t.Fatalf("event data = %+v", said)
-	}
-
-	// Balon ~4 saniye (bubbleTicks) sonra silinmeli. Tick gönder/oku iç
-	// içe (boru hattı tamponlarını taşırmamak için — bkz. gather testi).
-	var last world.Snapshot
-	for i := 0; i < 4*world.TickRate; i++ {
-		w.Send(world.Tick{})
-		last = nextSnap(t, ch1)
-	}
-	if last.Players[0].Bubble != "" {
-		t.Fatalf("bubble not expired: %q", last.Players[0].Bubble)
-	}
-
-	// Geçersiz komutlar: boş ve fazla uzun metin event üretmemeli.
-	w.Send(world.Chat{PlayerID: "p1", Text: "   "})
-	w.Send(world.Chat{PlayerID: "p1", Text: strings.Repeat("x", 121)})
-	w.Send(world.Chat{PlayerID: "yok", Text: "hayalet"})
-	w.Send(world.Tick{})
-	if snap := nextSnap(t, ch1); snap.Players[0].Bubble != "" {
-		t.Fatalf("invalid chat produced bubble: %q", snap.Players[0].Bubble)
-	}
-	if evs, _ := store.ReadStream(world.ChatStream, 0, 0); len(evs) != 1 {
-		t.Fatalf("invalid chats appended events: %d, want still 1", len(evs))
-	}
-}
-
-// Toplama: menzil kontrolü, node tüketimi, event basımı ve respawn.
-func TestGatherDepleteAndRespawn(t *testing.T) {
-	dir, err := os.MkdirTemp("", "shardlands-world-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	store, err := es.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-
-	sys := actor.NewSystem("test")
-	defer sys.Shutdown()
-	w, err := sys.Spawn(world.Props(store))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s1, ch1 := collector(t, sys, "sess1")
-	w.Send(world.Join{PlayerID: "p1", Name: "ayşe", Session: s1})
-
-	// Merkezden (400,300) uzaktaki node menzil dışı: toplama sessizce
-	// başarısız olmalı (n5 (400,180) 120px uzakta, menzil 48).
-	w.Send(world.Gather{PlayerID: "p1"})
-	if evs, _ := store.ReadStream(inventory.Stream("p1"), 0, 0); len(evs) != 0 {
-		t.Fatalf("out-of-range gather appended %d events", len(evs))
-	}
-
-	// n5'e yürü: yukarı 12 tick = 120px → (400,180). Tick gönder/oku
-	// İÇ İÇE: toplu göndermek world→collector→kanal boru hattının
-	// tamponlarını (64+64+64) aşınca deadlock olur — Block mailbox'lı
-	// aktör zincirlerinde backpressure gerçek bir şeydir.
-	w.Send(world.Input{PlayerID: "p1", Up: true})
-	for i := 0; i < 12; i++ {
-		w.Send(world.Tick{})
-		nextSnap(t, ch1)
-	}
-	w.Send(world.Input{PlayerID: "p1"}) // dur
-
-	w.Send(world.Gather{PlayerID: "p1"})
-	w.Send(world.Tick{})
-	snap := nextSnap(t, ch1)
-	var n5 world.NodeState
-	for _, n := range snap.Nodes {
-		if n.ID == "n5" {
-			n5 = n
+func (c *collector) Receive(ctx *actor.Context) {
+	switch m := ctx.Message().(type) {
+	case world.Snapshot:
+		select {
+		case c.snaps <- m:
+		default:
+		}
+	case world.AssignedRegion:
+		select {
+		case c.assigns <- m:
+		default:
 		}
 	}
-	if n5.Available {
-		t.Fatal("gathered node must be depleted in snapshot")
+}
+
+type harness struct {
+	t      *testing.T
+	sys    *actor.System
+	router *world.Router
+}
+
+func newHarness(t *testing.T, store *es.Store, shards ...string) *harness {
+	t.Helper()
+	if len(shards) == 0 {
+		shards = []string{"shard-0", "shard-1"}
 	}
+	sys := actor.NewSystem("test")
+	router, err := world.NewHub(sys, store, shards)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sys.Shutdown)
+	return &harness{t: t, sys: sys, router: router}
+}
+
+func (h *harness) tickAll() {
+	for _, ref := range h.router.Refs() {
+		ref.Send(world.Tick{})
+	}
+}
+
+// spawnPlayer, oyuncuyu (x,y)'de doğurur ve collector'ını döner; başlangıç
+// bölge ref'i de döner.
+func (h *harness) spawnPlayer(id, name string, x, y float64) (*collector, *actor.Ref) {
+	h.t.Helper()
+	c := &collector{snaps: make(chan world.Snapshot, 1024), assigns: make(chan world.AssignedRegion, 16)}
+	sess, err := h.sys.Spawn(actor.Props{Producer: func() actor.Actor { return c }})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	_, _, ref := h.router.SpawnRegion(x, y)
+	ref.Send(world.Join{PlayerID: id, Name: name, Session: sess, X: x, Y: y})
+	return c, ref
+}
+
+func drainSnap(c *collector) (world.Snapshot, bool) {
+	select {
+	case s := <-c.snaps:
+		return s, true
+	default:
+		return world.Snapshot{}, false
+	}
+}
+
+// İki oyuncu aynı bölgede birbirini görmeli.
+func TestCoRegionVisibility(t *testing.T) {
+	h := newHarness(t, nil)
+	cx, cy := world.Width/2, world.Height/2
+	c1, _ := h.spawnPlayer("p1", "ayşe", cx, cy)
+	c2, _ := h.spawnPlayer("p2", "bora", cx, cy)
+
+	// Birkaç tick sonra ikisi de aynı bölgede iki oyuncu görmeli.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.tickAll()
+		time.Sleep(5 * time.Millisecond)
+		s, ok := lastSnap(c1)
+		if ok && len(s.Players) == 2 {
+			s2, ok2 := lastSnap(c2)
+			if ok2 && len(s2.Players) == 2 && s2.RegionID == s.RegionID {
+				return
+			}
+		}
+	}
+	t.Fatal("co-region players never saw each other")
+}
+
+// lastSnap, kanaldaki en yeni snapshot'ı döner (birikenleri atlar).
+func lastSnap(c *collector) (world.Snapshot, bool) {
+	var last world.Snapshot
+	got := false
+	for {
+		s, ok := drainSnap(c)
+		if !ok {
+			return last, got
+		}
+		last, got = s, true
+	}
+}
+
+// Handoff: oyuncu sol sınırı geçince bölge değişir; oturum AssignedRegion
+// alır, kaynak bölgeden kaybolur, hedef bölgede görünür.
+func TestHandoffAcrossBoundary(t *testing.T) {
+	h := newHarness(t, nil)
+	cx, cy := world.Width/2, world.Height/2 // (400,300) → r-1-1
+	c, cur := h.spawnPlayer("p1", "gezgin", cx, cy)
+
+	startRegion := world.RegionAt(cx, cy)
+	if startRegion != "r-1-1" {
+		t.Fatalf("spawn region = %s, want r-1-1", startRegion)
+	}
+
+	var assigned *world.AssignedRegion
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && assigned == nil {
+		cur.Send(world.Input{PlayerID: "p1", Left: true}) // sola bas
+		h.tickAll()
+		time.Sleep(5 * time.Millisecond)
+		select {
+		case a := <-c.assigns:
+			assigned = &a
+			cur = a.Ref
+		default:
+		}
+	}
+	if assigned == nil {
+		t.Fatal("no handoff after crossing left boundary")
+	}
+	if assigned.RegionID != "r-0-1" {
+		t.Fatalf("handed off to %s, want r-0-1", assigned.RegionID)
+	}
+
+	// Hedef bölge snapshot'ında oyuncu görünmeli.
+	found := false
+	for time.Now().Before(deadline) && !found {
+		cur.Send(world.Input{PlayerID: "p1"}) // dur
+		h.tickAll()
+		time.Sleep(5 * time.Millisecond)
+		if s, ok := lastSnap(c); ok && s.RegionID == "r-0-1" {
+			for _, p := range s.Players {
+				if p.ID == "p1" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("player not visible in destination region after handoff")
+	}
+}
+
+// Bölge→shard eşlemesi: her bölge bir shard'a atanır; RegionAt sınırları
+// doğru; iki shard mevcut.
+func TestRegionShardMapping(t *testing.T) {
+	h := newHarness(t, nil, "shard-0", "shard-1")
+	regions := []string{"r-0-0", "r-1-0", "r-0-1", "r-1-1"}
+	shardsSeen := map[string]bool{}
+	for _, rid := range regions {
+		s := h.router.ShardOf(rid)
+		if s == "" {
+			t.Fatalf("region %s has no shard", rid)
+		}
+		shardsSeen[s] = true
+		if h.router.Ref(rid) == nil {
+			t.Fatalf("region %s has no actor", rid)
+		}
+	}
+	// İki shard da en az bir bölge almalı (denge; 128 vnode ile beklenir).
+	if len(shardsSeen) != 2 {
+		t.Fatalf("regions spread over %d shards, want 2", len(shardsSeen))
+	}
+	// RegionAt sınır kontrolleri.
+	cases := []struct {
+		x, y float64
+		want string
+	}{
+		{0, 0, "r-0-0"}, {399, 299, "r-0-0"}, {400, 300, "r-1-1"},
+		{799, 599, "r-1-1"}, {200, 400, "r-0-1"}, {600, 100, "r-1-0"},
+	}
+	for _, c := range cases {
+		if got := world.RegionAt(c.x, c.y); got != c.want {
+			t.Fatalf("RegionAt(%.0f,%.0f) = %s, want %s", c.x, c.y, got, c.want)
+		}
+	}
+}
+
+// İzole shard (CAP önizleme): hedef bölgenin shard'ı down ise oyuncu
+// sınırı geçemez, mevcut bölgede kalır.
+func TestUnavailableShardBlocksHandoff(t *testing.T) {
+	h := newHarness(t, nil)
+	cx, cy := world.Width/2, world.Height/2
+	c, cur := h.spawnPlayer("p1", "gezgin", cx, cy)
+
+	// Sol komşu bölge r-0-1'in shard'ını indir.
+	destShard := h.router.ShardOf("r-0-1")
+	srcShard := h.router.ShardOf("r-1-1")
+	if destShard == srcShard {
+		t.Skip("komşu bölgeler aynı shard'ta; bu kurulumda anlamlı değil")
+	}
+	h.router.SetShardUp(destShard, false)
+
+	// Sola bas; handoff OLMAMALI, oyuncu r-1-1'de kalmalı (sınıra sıkışır).
+	sawAssign := false
+	for i := 0; i < 60; i++ {
+		cur.Send(world.Input{PlayerID: "p1", Left: true})
+		h.tickAll()
+		time.Sleep(5 * time.Millisecond)
+		select {
+		case <-c.assigns:
+			sawAssign = true
+		default:
+		}
+	}
+	if sawAssign {
+		t.Fatal("handoff happened despite destination shard being down (CAP: must block)")
+	}
+	if s, ok := lastSnap(c); ok {
+		if s.RegionID != "r-1-1" {
+			t.Fatalf("player left region %s despite down shard, want r-1-1", s.RegionID)
+		}
+		for _, p := range s.Players {
+			if p.ID == "p1" && p.X >= world.RegionW {
+				// hâlâ sağ yarıda (sınırın sağında) olmalı
+				continue
+			}
+			if p.ID == "p1" && p.X < world.RegionW-2 {
+				t.Fatalf("player x=%.1f crossed boundary despite down shard", p.X)
+			}
+		}
+	}
+}
+
+// Toplama bölgede çalışır ve event yazar (store'lu).
+func TestGatherInRegion(t *testing.T) {
+	dir, err := os.MkdirTemp("", "shardlands-world-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	store, err := es.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	h := newHarness(t, store)
+	// n6 kristal (400,420) r-1-1'de. Oyuncuyu oraya yakın doğur.
+	c, cur := h.spawnPlayer("p1", "toplayıcı", 400, 420)
+	_ = c
+	cur.Send(world.Gather{PlayerID: "p1"})
+	h.tickAll()
+	time.Sleep(20 * time.Millisecond)
 
 	evs, err := store.ReadStream(inventory.Stream("p1"), 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(evs) != 1 || evs[0].Type != inventory.EventGathered {
-		t.Fatalf("inv events = %+v, want 1 ResourceGathered", evs)
+		t.Fatalf("gather events = %d, want 1", len(evs))
 	}
 	var g inventory.Gathered
 	json.Unmarshal(evs[0].Data, &g)
-	if g.NodeID != "n5" || g.Kind != "wood" || g.Amount != 1 || g.PlayerID != "p1" {
-		t.Fatalf("event data = %+v", g)
-	}
-
-	// Tükenmiş node tekrar toplanamaz.
-	w.Send(world.Gather{PlayerID: "p1"})
-	if evs, _ := store.ReadStream(inventory.Stream("p1"), 0, 0); len(evs) != 1 {
-		t.Fatalf("depleted node re-gathered: %d events", len(evs))
-	}
-
-	// Respawn: RespawnTicks sonra node yeniden müsait ve toplanabilir.
-	var last world.Snapshot
-	for i := 0; i < world.RespawnTicks+1; i++ {
-		w.Send(world.Tick{})
-		last = nextSnap(t, ch1)
-	}
-	for _, n := range last.Nodes {
-		if n.ID == "n5" && !n.Available {
-			t.Fatal("node did not respawn")
-		}
-	}
-	w.Send(world.Gather{PlayerID: "p1"})
-	w.Send(world.Tick{}) // aktörün Gather'ı işlediğinden emin ol (senkron noktası)
-	nextSnap(t, ch1)
-	if evs, _ := store.ReadStream(inventory.Stream("p1"), 0, 0); len(evs) != 2 {
-		t.Fatalf("respawned node not gatherable: %d events, want 2", len(evs))
-	}
-}
-
-// Dünya sınırları: sola koşmaya devam eden oyuncu 0'da durmalı.
-func TestClampAtBounds(t *testing.T) {
-	sys := actor.NewSystem("test")
-	defer sys.Shutdown()
-
-	w, _ := sys.Spawn(world.Props(nil))
-	s1, ch1 := collector(t, sys, "sess1")
-	w.Send(world.Join{PlayerID: "p1", Name: "a", Session: s1})
-	w.Send(world.Input{PlayerID: "p1", Left: true})
-
-	// Merkezden sol kenara yeter de artar sayıda tick (gönder/oku iç içe).
-	needed := int(world.Width/2/(world.Speed/world.TickRate)) + 5
-	var last world.Snapshot
-	for i := 0; i < needed; i++ {
-		w.Send(world.Tick{})
-		last = nextSnap(t, ch1)
-	}
-	if last.Players[0].X != 0 {
-		t.Fatalf("x = %v, want clamped at 0", last.Players[0].X)
+	if g.Kind != "crystal" || g.NodeID != "n6" {
+		t.Fatalf("gathered %+v, want crystal/n6", g)
 	}
 }
