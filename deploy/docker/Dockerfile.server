@@ -1,0 +1,26 @@
+# Shardlands sunucusu (gateway + hub bölgeleri + shard Raft grupları +
+# matchmaking + read model'ler).
+#
+# Multi-stage: derleme imajı (Go araç zinciri, ~1GB) çalışma imajına
+# taşınmaz. Sonuç distroless — kabuk yok, paket yöneticisi yok: saldırı
+# yüzeyi küçük ve "pod'a girip bakayım" mümkün değil (zero trust'ın
+# altyapı tarafı).
+FROM golang:1.26 AS build
+WORKDIR /src
+
+# Bağımlılıklar önce: kaynak değişince modül katmanı yeniden inmesin.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+# CGO kapalı: statik binary, distroless'ta libc bağımlılığı yok.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/server ./cmd/server
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /app
+COPY --from=build /out/server /app/server
+COPY client /app/client
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/app/server", "-http", ":8080", "-client", "/app/client", "-data", "/data"]

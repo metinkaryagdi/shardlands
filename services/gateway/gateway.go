@@ -72,6 +72,8 @@ type Gateway struct {
 	loginLimiter *ratelimit.Keyed
 	// shed, hız sınırı yüzünden atılan komut sayısı (gözlem).
 	shed atomic.Int64
+	// ready, hazır olma bayrağı (readiness probu). Kapanışta düşer.
+	ready atomic.Bool
 
 	// sessions, playerID → oturum aktörü. Handoff koordinatörü ve
 	// matchmaking oyuncuya buradan ulaşır.
@@ -103,10 +105,35 @@ func New(cfg Config) *Gateway {
 	mux.HandleFunc("GET /api/stats", g.handleStats)
 	mux.HandleFunc("POST /api/trade", g.handleTrade)
 	mux.HandleFunc("GET /ws", g.handleWS)
+	mux.HandleFunc("GET /healthz", g.handleHealthz)
+	mux.HandleFunc("GET /readyz", g.handleReadyz)
 	mux.Handle("/", noCache(http.FileServer(http.Dir(cfg.ClientDir))))
 	g.mux = mux
+	g.ready.Store(true)
 	return g
 }
+
+// handleHealthz: CANLILIK. "Süreç ayakta mı?" Yanıt veriyorsak evet.
+// Kasten bağımlılık yoklamaz: NATS düştüğü için kubelet'in bizi
+// öldürmesi arızayı büyütür, düzeltmez.
+func (g *Gateway) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("ok"))
+}
+
+// handleReadyz: HAZIR OLMA. "Bana trafik gönder" demek. Kapanış
+// başladığında false'a döner; kubelet Endpoints'ten düşürür ve yeni
+// oyuncu gelmez. Zero-downtime dağıtımın temel taşı bu ayrım.
+func (g *Gateway) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if !g.ready.Load() {
+		http.Error(w, "draining", http.StatusServiceUnavailable)
+		return
+	}
+	w.Write([]byte("ready"))
+}
+
+// Drain, gateway'i hazır-değil işaretler. Var olan WS oturumları
+// çalışmaya devam eder — yalnız YENİ trafik kesilir.
+func (g *Gateway) Drain() { g.ready.Store(false) }
 
 // Handler, HTTP yönlendiricisi.
 func (g *Gateway) Handler() http.Handler { return g.mux }

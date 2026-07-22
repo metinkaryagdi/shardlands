@@ -25,6 +25,13 @@ func main() {
 		log.Println("uyarı: SHARDLANDS_SECRET yok, geliştirme sırrı kullanılıyor")
 	}
 
+	// ARENA_NAMESPACE varsa arenalar CRD ile kümede açılır; yoksa nil
+	// döner ve sunucu yerel sağlayıcıyı kullanır (tek süreç geliştirme).
+	prov, err := k8sProvisioner()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	srv, err := server.Start(server.Config{
 		HTTPAddr:        *httpAddr,
 		PlayerAddr:      "127.0.0.1:9101",
@@ -32,6 +39,9 @@ func main() {
 		Secret:          secret,
 		ClientDir:       *clientDir,
 		DataDir:         *dataDir,
+		Provisioner:     prov,
+		// Boşsa gömülü NATS; Kubernetes'te NATS_URL verilir.
+		NATSURL: os.Getenv("NATS_URL"),
 	})
 	if err != nil {
 		log.Fatal(err)

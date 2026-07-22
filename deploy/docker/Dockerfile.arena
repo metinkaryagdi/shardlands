@@ -1,0 +1,18 @@
+# Arena Pod'u: tek maçlık, kısa ömürlü iş yükü.
+#
+# Operator bu imajdan Pod yaratır ve ARENA_ID/ARENA_MODE/ARENA_PLAYERS
+# ortam değişkenlerini verir (bkz. operator/controller). Maç bitince
+# süreç 0 ile çıkar → Pod Succeeded → operator temizler.
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/arena ./cmd/arena
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/arena /arena
+USER 65532:65532
+EXPOSE 7777
+ENTRYPOINT ["/arena"]

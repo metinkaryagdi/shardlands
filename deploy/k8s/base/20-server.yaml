@@ -1,0 +1,167 @@
+# Shardlands sunucusu.
+#
+# NEDEN StatefulSet (Deployment değil)? Sunucu DURUMLU: event store (LSM
+# + WAL) ve shard Raft gruplarının kalıcı log'ları diskte yaşıyor.
+# Deployment'ın rastgele Pod kimlikleri ve paylaşımlı PVC'si bu veriyle
+# uyumsuz; StatefulSet sabit kimlik (shardlands-0) ve Pod başına PVC verir.
+#
+# NEDEN replicas=1? Hub bölgeleri ve shard Raft grupları şu an TEK
+# süreçte yaşıyor; ikinci replika ikinci bir dünya açardı (split-brain).
+# Yatay ölçek için bölgelerin süreçlere dağıtılması gerekir — bilinçli
+# olarak Faz 7+ işi. Arena'lar zaten ayrı Pod'lara dağılıyor (operator).
+apiVersion: v1
+kind: Service
+metadata:
+  name: shardlands
+  namespace: shardlands
+spec:
+  selector:
+    app: shardlands-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shardlands-config
+  namespace: shardlands
+data:
+  NATS_URL: "nats://nats-0.nats.shardlands.svc.cluster.local:4222"
+  # ARENA_NAMESPACE dolu olduğunda matchmaking saga'sı arenayı yerel
+  # süreçte değil, Arena CRD'si yazarak açar (K8sProvisioner).
+  ARENA_NAMESPACE: "shardlands"
+  ARENA_IMAGE: "shardlands/arena:dev"
+---
+# Sunucunun RBAC'i operator'ünkinden DAR: yalnız kendi namespace'inde
+# Arena kaydı açar/siler ve durumunu OKUR. Pod yaratma yetkisi YOK —
+# Pod'u operator yaratır. Sorumluluk ayrımı yetki düzeyinde de geçerli:
+# sunucu "ne istediğini" söyler, "nasıl" operator'ün işidir.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shardlands-server
+  namespace: shardlands
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shardlands-server
+  namespace: shardlands
+rules:
+  - apiGroups: ["shardlands.dev"]
+    resources: ["arenas"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["shardlands.dev"]
+    resources: ["arenas/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shardlands-server
+  namespace: shardlands
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: shardlands-server
+subjects:
+  - kind: ServiceAccount
+    name: shardlands-server
+    namespace: shardlands
+---
+# Geliştirme sırrı. Üretimde bu Secret YERİNE Vault kullanılacak
+# (Faz 6'nın sonraki adımı) — burada bilerek düz duruyor ve README'de
+# "üretime böyle gitmez" diye işaretli.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shardlands-secret
+  namespace: shardlands
+type: Opaque
+stringData:
+  SHARDLANDS_SECRET: "dev-secret-change-me"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shardlands
+  namespace: shardlands
+spec:
+  serviceName: shardlands
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shardlands-server
+  template:
+    metadata:
+      labels:
+        app: shardlands-server
+    spec:
+      serviceAccountName: shardlands-server
+      # Oyuncuların bağlantısı uzun ömürlü (WS): kapanışta hemen
+      # kesmek yerine oturumların temizlenmesine süre tanı.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        # runAsUser SAYISAL olmalı: kubelet, isimli kullanıcının (`USER
+        # nonroot`) root olmadığını doğrulayamaz ve Pod'u başlatmaz.
+        runAsUser: 65532
+        # distroless nonroot = uid/gid 65532. PVC varsayılan olarak
+        # root'a ait oluşur; fsGroup olmadan event store ilk yazmada
+        # "permission denied" alır.
+        fsGroup: 65532
+      containers:
+        - name: server
+          image: shardlands/server:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: shardlands-config
+          env:
+            - name: SHARDLANDS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: shardlands-secret
+                  key: SHARDLANDS_SECRET
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # readiness ≠ liveness: /readyz kapanışta 503'e döner (yeni
+          # trafik kesilir), /healthz süreç ayakta olduğu sürece 200
+          # kalır (bağımlılık arızasında Pod'u öldürmeyiz).
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

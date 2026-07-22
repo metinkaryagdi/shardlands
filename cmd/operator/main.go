@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -38,11 +40,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	opts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
-	})
+	}
+	if namespace != "" {
+		// Cache'i tek namespace'e daraltmak yalnız bellek tasarrufu
+		// değil, güvenlik sınırı: operator kümenin geri kalanındaki
+		// Pod'ları list/watch etmez.
+		opts.Cache = cache.Options{
+			DefaultNamespaces: map[string]cache.Config{namespace: {}},
+		}
+	}
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), opts)
 	if err != nil {
 		log.Error(err, "manager")
 		os.Exit(1)
@@ -53,6 +64,17 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "arena controller")
+		os.Exit(1)
+	}
+
+	// Kubelet probları için /healthz ve /readyz. Ping "süreç ayakta"
+	// demektir; hazır olma manager'ın cache'i senkronize olunca gelir.
+	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
+		log.Error(err, "healthz")
+		os.Exit(1)
+	}
+	if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
+		log.Error(err, "readyz")
 		os.Exit(1)
 	}
 

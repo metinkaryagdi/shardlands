@@ -1,0 +1,10 @@
+# Derleme bağlamını küçük tut: her docker build bu ağacı daemon'a yollar.
+# Go kaynak dizinleri BİLEREK dışlanmadı — bir paketi kazara dışarıda
+# bırakmak derlemeyi "package not found" ile kırar.
+.git
+.gitignore
+data
+**/data
+*.log
+deploy/kind
+docs

@@ -1,0 +1,114 @@
+# Arena Operator.
+#
+# RBAC felsefesi = EN AZ YETKİ (least privilege). Operator'ün yaptığı iş
+# belli: Arena kaynaklarını okur/durumunu yazar ve Pod yaratıp siler.
+# Bu yüzden cluster-admin değil, tam da bu fiillere izin veren dar bir
+# ClusterRole tanımlıyoruz. Zero trust'ın kontrol düzlemi tarafı budur:
+# ele geçen bir operator Pod'u, kümede Arena Pod'undan fazlasını yapamaz.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shardlands-operator
+  namespace: shardlands
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shardlands-operator
+rules:
+  # Kendi CRD'miz: tam yaşam döngüsü.
+  - apiGroups: ["shardlands.dev"]
+    resources: ["arenas"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Durum alt-kaynağı ayrı yetki ister (Status().Update).
+  - apiGroups: ["shardlands.dev"]
+    resources: ["arenas/status"]
+    verbs: ["get", "update", "patch"]
+  # Finalizer ekleme/kaldırma.
+  - apiGroups: ["shardlands.dev"]
+    resources: ["arenas/finalizers"]
+    verbs: ["update"]
+  # Arena Pod'ları: yarat, izle, sil. Pod'dan başka çekirdek kaynağa
+  # dokunmuyoruz — liste bilerek kısa.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Olay kaydı (kubectl describe arena'da görünsün).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shardlands-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: shardlands-operator
+subjects:
+  - kind: ServiceAccount
+    name: shardlands-operator
+    namespace: shardlands
+---
+# Operator DURUMSUZDUR: tüm gerçeği API sunucusundan okur, diskte hiçbir
+# şey tutmaz. Bu yüzden Deployment (StatefulSet değil) ve bu yüzden
+# çökmesi veri kaybı değil, yalnız gecikme demektir — ayağa kalkınca
+# seviye-tetiklemeli döngü farkı tekrar kapatır.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shardlands-operator
+  namespace: shardlands
+spec:
+  replicas: 1 # leader election yok: tek replika (bkz. deploy/README.md)
+  selector:
+    matchLabels:
+      app: shardlands-operator
+  template:
+    metadata:
+      labels:
+        app: shardlands-operator
+    spec:
+      serviceAccountName: shardlands-operator
+      securityContext:
+        runAsNonRoot: true
+        # runAsUser SAYISAL olmalı. Dockerfile'da `USER nonroot` (isim)
+        # yazılırsa kubelet kullanıcının root olmadığını DOĞRULAYAMAZ ve
+        # Pod "container has runAsNonRoot and image has non-numeric user"
+        # ile başlamaz — imaj gerçekten nonroot olsa bile.
+        runAsUser: 65532
+      containers:
+        - name: operator
+          image: shardlands/operator:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--namespace=shardlands"
+          ports:
+            - containerPort: 8081
+              name: metrics
+            - containerPort: 8082
+              name: probe
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

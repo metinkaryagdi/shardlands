@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shardlands
+  labels:
+    name: shardlands
+    # Service mesh sidecar enjeksiyonu (Faz 6'nın sonraki adımı).
+    # linkerd.io/inject: enabled
+    # istio-injection: enabled

@@ -195,6 +195,12 @@ func (r *ArenaReconciler) desiredPod(a *arenav1.Arena, name string) *corev1.Pod 
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever, // maç tek seferlik
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot: ptr(true),
+				// Sayısal olmalı: kubelet, imajdaki isimli kullanıcının
+				// (`USER nonroot`) root olmadığını doğrulayamaz.
+				RunAsUser: ptr(int64(65532)),
+			},
 			Containers: []corev1.Container{{
 				Name:  "arena",
 				Image: image,
@@ -204,6 +210,13 @@ func (r *ArenaReconciler) desiredPod(a *arenav1.Arena, name string) *corev1.Pod 
 					{Name: "ARENA_PLAYERS", Value: players},
 				},
 				Ports: []corev1.ContainerPort{{ContainerPort: 7777, Name: "game"}},
+				// Arena durumsuz ve kısa ömürlü: diske yazmaz, ayrıcalık
+				// istemez. En dar profil (zero trust: iş yükü tarafı).
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr(false),
+					ReadOnlyRootFilesystem:   ptr(true),
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				},
 			}},
 		},
 	}
@@ -216,6 +229,10 @@ func (r *ArenaReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}). // Pod değişimleri de reconcile tetikler
 		Complete(r)
 }
+
+// ptr, Kubernetes API'sinin "belirtilmedi" ile "false" ayrımını
+// yapabilmesi için gereken işaretçileri üretir.
+func ptr[T any](v T) *T { return &v }
 
 func containsString(xs []string, s string) bool {
 	for _, x := range xs {

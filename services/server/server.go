@@ -48,12 +48,17 @@ type Config struct {
 	// (LocalProvisioner). Kubernetes kurulumunda K8sProvisioner geçilir;
 	// gateway uzak arenaya gRPC ile vekil eder.
 	Provisioner matchmaking.Provisioner
+	// NATSURL boşsa GÖMÜLÜ NATS başlatılır (tek süreç, geliştirme ve
+	// testler). Kubernetes'te ayrı bir NATS StatefulSet'inin adresi
+	// verilir — bus artık süreç ömrüne bağlı olmaz.
+	NATSURL string
 }
 
 type Server struct {
 	HTTPAddr string // gerçek adres (":0" çözülmüş hali)
 
 	httpSrv     *http.Server
+	gw          *gateway.Gateway
 	grpcSrvs    []*grpc.Server
 	conns       []*grpc.ClientConn
 	system      *actor.System
@@ -129,13 +134,18 @@ func Start(cfg Config) (*Server, error) {
 	// Faz 4: event bus (gömülü NATS) + OUTBOX RELAY. Yazma tek yere
 	// (event store) gider; relay store'u bus'a taşır; read model'ler
 	// bus'tan tüketir. Dual-write yok, at-least-once var.
-	nsrv, err := bus.StartEmbedded(filepath.Join(cfg.DataDir, "nats"))
-	if err != nil {
-		s.Stop()
-		return nil, err
+	natsURL := cfg.NATSURL
+	if natsURL == "" {
+		// Gömülü mod: tek süreç kurulum ve testler.
+		nsrv, err := bus.StartEmbedded(filepath.Join(cfg.DataDir, "nats"))
+		if err != nil {
+			s.Stop()
+			return nil, err
+		}
+		s.natsSrv = nsrv
+		natsURL = nsrv.URL()
 	}
-	s.natsSrv = nsrv
-	b, err := bus.Connect(nsrv.URL())
+	b, err := bus.Connect(natsURL)
 	if err != nil {
 		s.Stop()
 		return nil, err
@@ -240,6 +250,7 @@ func Start(cfg Config) (*Server, error) {
 	gw.SetHandoff(s.handoff)
 	s.matcher.SetAssigner(gw)
 
+	s.gw = gw
 	s.httpSrv = &http.Server{Handler: gw.Handler()}
 	go s.httpSrv.Serve(httpLis)
 
@@ -265,6 +276,11 @@ func (s *Server) serveGRPC(addr string, register func(*grpc.Server)) (string, er
 func (s *Server) Stop() { s.stopOnce.Do(s.stop) }
 
 func (s *Server) stop() {
+	// Önce hazır-değil işaretle: kubelet Endpoints'ten düşürene kadar
+	// var olan bağlantılar çalışmaya devam eder, yeni oyuncu gelmez.
+	if s.gw != nil {
+		s.gw.Drain()
+	}
 	if s.httpSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		s.httpSrv.Shutdown(ctx)

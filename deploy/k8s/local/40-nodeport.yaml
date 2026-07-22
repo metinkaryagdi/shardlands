@@ -1,0 +1,20 @@
+# YALNIZ YEREL KÜME İÇİN. Üretimde bunun yerine Ingress/Gateway API
+# (ve service mesh'in ingress'i) kullanılır; NodePort düğüm IP'sine ve
+# sabit port aralığına bağlı olduğu için taşınabilir değildir.
+#
+# kind-config.yaml'daki extraPortMapping bu portu ana makineye açar:
+#   http://localhost:30080
+apiVersion: v1
+kind: Service
+metadata:
+  name: shardlands-nodeport
+  namespace: shardlands
+spec:
+  type: NodePort
+  selector:
+    app: shardlands-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: 30080
