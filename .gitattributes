@@ -1,0 +1,7 @@
+# Kabuk betikleri ve konteyner girdileri DAİMA LF olmalı.
+# CRLF ile checkout edilen bir betik Linux'ta "bad interpreter: No such
+# file or directory" ile ölür — shebang satırının sonundaki \r yüzünden.
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
