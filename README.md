@@ -18,6 +18,8 @@ pkg/auth/      Faz 1: minimal HS256 JWT (stdlib)                       ✅
 pkg/es/        Faz 2: event store (LSM üstünde, CQRS/ES)               ✅
 pkg/crdt/      Faz 2: G/PN-Counter CRDT                                ✅
 pkg/hashring/  Faz 3: consistent hashing (vnode'lu)                    ✅
+pkg/raftstore/ Faz 3: Raft Storage'ın LSM tabanlı kalıcı hâli          ✅
+pkg/dlock/     Faz 3: Raft üstünde lease+fencing dağıtık kilit         ✅
 proto/         Faz 1: gRPC/Protobuf kontratları (buf ile codegen)      ✅
 gen/           Üretilen Go kodu (commit'li — araçsız build için)       ✅
 services/      Faz 1+: gateway, player, world, matchmaking, server     ✅
@@ -145,6 +147,59 @@ model'ler her açılışta log'dan sıfırdan kurulur.
 - **MVCC'nin event-store hâli.** Event'ler değişmez olduğundan bir
   okuyucunun gördüğü [1..checkpoint] sonsuza dek sabit; versiyon = log
   pozisyonu. Genel amaçlı snapshot isolation (Scan hâlâ kilitli) Faz 3.
+
+## Faz 3 — Sharding ve Dağıtım ✅
+
+| Parça | Notlar |
+|---|---|
+| Consistent hashing | [pkg/hashring](pkg/hashring/README.md) — vnode'lu halka; minimal remap testli |
+| Bölge-shard'lı dünya | 2×2 grid bölge aktörleri; bölge→shard eşlemesi; sınırda **handoff** |
+| Shard lideri = Raft | [services/shard](services/shard/shard.go) — shard başına Raft grubu; liderlik sahiplik demek |
+| Kalıcı Raft depo | [pkg/raftstore](pkg/raftstore/store.go) — Faz 0 Raft + Faz 0 LSM birleşimi |
+| Distributed lock | [pkg/dlock](pkg/dlock/README.md) — lease + **fencing token** |
+| CAP/PACELC deneyi | [docs/cap-pacelc.md](docs/cap-pacelc.md) — bilinçli izolasyon |
+| 2PC/3PC vs saga | [docs/2pc-vs-saga.md](docs/2pc-vs-saga.md) |
+
+```mermaid
+graph TD
+    C[istemci] -->|WS| S["session aktörü<br/>(bölge ref'i taşır)"]
+    S -->|input| R1["bölge r-0-0"]
+    S -.->|handoff sonrası| R2["bölge r-1-1"]
+    subgraph SH0["shard-0 (Raft grubu, 3 replika)"]
+        R1
+        R3["bölge r-0-1"]
+    end
+    subgraph SH1["shard-1 (Raft grubu, 3 replika)"]
+        R2
+        R4["bölge r-1-0"]
+    end
+    HR["consistent hashing<br/>bölge → shard"] --> SH0
+    HR --> SH1
+    SH0 -->|lider yoksa| F["bölgeler DONAR (CP)"]
+    ST["/api/stats (CRDT)"] --> AP["bölünmede de çalışır (AP)"]
+```
+
+### Faz 3 kapanış — dersler
+
+- **Consistent hashing "minimal" der, "sıfır" demez.** Ekleme yine ~1/N
+  anahtar taşır; sıfır taşınma açık atama tablosu (yani merkezi state =
+  konsensüs) ister. Biz ikisini birleştirdik: ring hızlı varsayılan
+  eşleme, Raft otoriter sahiplik.
+- **"Lider sanıyorum" ≠ "hizmet verebiliyorum".** Bölünmüş lider commit
+  edemez ama kendini lider sanar; `QuorumActive` (lease) olmadan
+  kullanılabilirlik ölçümü yalan söyler. Bu, CAP deneyinin ön koşuluydu.
+- **Yeni lider no-op yazmalı.** §5.4.2 gereği lider yalnız kendi
+  döneminden bir kaydı commit edebilir; no-op olmadan önceki dönemin
+  kayıtları uygulanmaz ve lider onları **okuyamaz** (dlock'ta "kilit
+  kayboldu" olarak patladı).
+- **Lease tek başına yetmez, fencing token gerekir.** Duraklamış bir
+  sahip lease'i dolduktan sonra hâlâ yazmaya çalışabilir; korunan kaynak
+  eski token'ı reddetmeli.
+- **CAP bir anahtar değil bütçedir.** Aynı sistemde bölge simülasyonu CP
+  (donar), global sayaç AP (çalışır). PACELC profilimiz **PC/EL**:
+  bölünmede tutarlılık, normalde gecikme.
+- **Sharding = ölçek + arıza yalıtımı.** Bir shard'ın izolasyonu
+  diğerinin bölgelerini etkilemiyor; blast radius sınırlı.
 
 ## Çalıştırma
 

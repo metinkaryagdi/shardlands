@@ -205,12 +205,20 @@ func TestRaftNodePersistsAcrossRestart(t *testing.T) {
 	if hs.Term < term {
 		t.Fatalf("persisted term %d < pre-restart term %d", hs.Term, term)
 	}
-	if len(hs.Log) != 3 {
-		t.Fatalf("persisted log = %d entries, want 3", len(hs.Log))
+	// Lider göreve başlarken bir no-op (boş Cmd) ekler; gerçek komutları
+	// süzerek doğrula.
+	var cmds []string
+	for _, e := range hs.Log {
+		if len(e.Cmd) > 0 {
+			cmds = append(cmds, string(e.Cmd))
+		}
 	}
-	for i, e := range hs.Log {
-		if want := fmt.Sprintf("op-%d", i); string(e.Cmd) != want {
-			t.Fatalf("entry %d = %q, want %q", i, e.Cmd, want)
+	if len(cmds) != 3 {
+		t.Fatalf("persisted commands = %d (%v), want 3", len(cmds), cmds)
+	}
+	for i, got := range cmds {
+		if want := fmt.Sprintf("op-%d", i); got != want {
+			t.Fatalf("command %d = %q, want %q", i, got, want)
 		}
 	}
 }

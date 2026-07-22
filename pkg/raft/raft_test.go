@@ -60,6 +60,11 @@ func (c *cluster) start(id string) {
 		Transport: c.nw.Transport(id),
 		Storage:   c.storages[id],
 		Apply: func(m ApplyMsg) {
+			// Liderin dönem başı no-op kaydı (boş Cmd) state machine
+			// için anlamsızdır; gerçek state machine'ler gibi yok say.
+			if len(m.Cmd) == 0 {
+				return
+			}
 			c.mu.Lock()
 			c.applied[id] = append(c.applied[id], string(m.Cmd))
 			c.mu.Unlock()

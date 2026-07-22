@@ -227,6 +227,17 @@ func (n *Node) startElection() {
 
 func (n *Node) becomeLeaderLocked() {
 	n.state = Leader
+	// Yeni liderin İLK işi: kendi döneminden boş (no-op) bir kayıt
+	// eklemek. §5.4.2 gereği lider yalnız KENDİ dönemindeki bir kaydı
+	// çoğunluk sayımıyla commit edebilir; no-op olmadan önceki
+	// dönemlerin kayıtları yeni bir yazma gelene kadar commit
+	// EDİLEMEZ — yani state machine'e uygulanmaz ve lider onları
+	// okuyamaz ("kilit kayboldu" yanılgısı). Raft makalesinin §8'de
+	// önerdiği standart çözüm budur. State machine'ler boş Cmd'li
+	// kaydı yok saymalıdır.
+	n.log = append(n.log, Entry{Term: n.term})
+	n.persistLocked()
+
 	last := n.lastLogIndexLocked()
 	for _, p := range n.cfg.Peers {
 		n.nextIndex[p] = last + 1 // iyimser başla, çakışmada geri yürü
