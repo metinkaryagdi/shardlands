@@ -6,6 +6,38 @@ konseptlerini (konsensüs, event sourcing, sharding, actor model, CRDT,
 observability...) üretim kalitesinde ama öğrenme odaklı bir projede uçtan
 uca uygulamak.
 
+**Sekiz faz tamamlandı** (`faz0` … `faz7`). Faz 0'ın bütün altyapısı —
+aktör sistemi, lock-free ring buffer, LSM-tree, Raft, CRDT, consistent
+hashing, dağıtık kilit — **kütüphanesiz, sıfırdan** yazıldı; amaç en hızlı
+çözümü bulmak değil mekanizmayı anlamaktı.
+
+> 📖 **[LEARNINGS.md](LEARNINGS.md)** — sekiz faz boyunca tekrar eden 12
+> ders. Fazların özeti değil; aynı ilkenin farklı katmanlarda nasıl
+> tekrar tekrar karşımıza çıktığının derlemesi. Projeyle ilgili tek bir
+> şey okunacaksa o olmalı.
+
+## Bir bakışta
+
+| | |
+| --- | --- |
+| **İki farklı gecikme profili** | Hub tutarlılık öncelikli (20 Hz, event-sourced, bölünmede **donar**); arena gecikme öncelikli (30 Hz, lock-free, aşırı yükte **komut düşürür**) |
+| **Sıfırdan yazılanlar** | aktör sistemi, MPSC ring buffer, LSM+WAL, Raft, vector clock, CRDT, consistent hashing, dlock, event store, JWT, W3C trace context, Vault istemcisi |
+| **Platform** | Kubernetes, Linkerd (mTLS + zero trust), ArgoCD (GitOps), Vault, Prometheus |
+| **Doğrulama** | 46 test dosyası, 6 kaos deneyi, kümede uçtan uca duman testi |
+| **Ölçek** | ~21.000 satır Go, 10 kavram notu |
+
+### Öne çıkan ölçümler
+
+```
+false sharing etkisi (8 çekirdek)     16.05 → 1.25 ns/op   (12.8×)
+arena tick                            39.8 ns
+hub world tick p95 (kümede)           47.5 µs    (bütçe 50 ms)
+gRPC sunucu p95 vs istemci p95        475 µs vs 7750 µs  ← fark: ağ + mesh
+WS vs QUIC datagram p99 (%10 kayıp)   150 ms vs ≈0
+kesintisiz dağıtım (player / hub)     0 hata / ~4 sn
+anahtar rotasyonu                     eski token geçerli kalır, restart yok
+```
+
 ## Monorepo Yapısı
 
 ```
@@ -31,7 +63,29 @@ services/handoff Faz 5: hub↔arena transferi (dlock + fencing)          ✅
 operator/      Faz 5: arena instance Kubernetes operator'ü (CRD)       ✅
 experiments/   Faz 5: taşıma karşılaştırması (WS vs QUIC)              ✅
 client/        HTML5 Canvas + vanilla JS istemci                       ✅
+pkg/vault/     Faz 6: sır sıfırı + KV okuma (elle yazılmış istemci)  ✅
+pkg/metrics/   Faz 7: Prometheus metrikleri (RED/USE, kardinalite)      ✅
+pkg/trace/     Faz 7: W3C Trace Context (sıfırdan)                     ✅
+pkg/logging/   Faz 7: slog + otomatik trace korelasyonu                 ✅
+deploy/        Faz 6: Docker, K8s, mesh, GitOps, Vault, kaos            ✅
 ```
+
+## Kavram notları
+
+Her biri koda geçmeden önce yazılmış "neden böyle" belgeleri:
+
+| Not | Konu |
+| --- | --- |
+| [cap-pacelc.md](docs/cap-pacelc.md) | CAP/PACELC ve bu projenin profili (PC/EL) |
+| [2pc-vs-saga.md](docs/2pc-vs-saga.md) | Dağıtık işlem yerine telafi |
+| [strangler-fig.md](docs/strangler-fig.md) | Monolitten servislere kademeli geçiş |
+| [ws-vs-quic.md](docs/ws-vs-quic.md) | Head-of-line blocking, ölçümle |
+| [service-mesh.md](docs/service-mesh.md) | Sidecar, mTLS, zero trust + 5 tuzak |
+| [zero-downtime.md](docs/zero-downtime.md) | Kesintisiz dağıtım zinciri ve nerede kopar |
+| [gitops.md](docs/gitops.md) | Pull vs push, ArgoCD = bir üst reconcile |
+| [secrets.md](docs/secrets.md) | Sır sıfırı, rotasyon, K8s Secret neden sır değil |
+| [chaos.md](docs/chaos.md) | Hipotezi önce yaz |
+| [observability.md](docs/observability.md) | Üç sinyal, SLO, yanma hızı alarmları |
 
 ## Faz 0 — Temel Yapı Taşları ✅ (tag: `faz0`)
 
@@ -76,7 +130,7 @@ graph TD
     end
 ```
 
-## Faz 1 — Çekirdek İskelet, Tek Node (devam ediyor)
+## Faz 1 — Çekirdek İskelet, Tek Node ✅ (tag: `faz1`)
 
 Monolit prototip: tüm servisler TEK süreçte ama GERÇEK ağ sınırlarıyla
 (player/matchmaking ayrı TCP portlarında gRPC, gateway gerçek gRPC
@@ -104,7 +158,7 @@ graph LR
   testte ([server_test.go](services/server/server_test.go)) hem canlı
   tarayıcıda doğrulandı.
 
-## Faz 2 — Kalıcı Hub ve Veri Modeli (devam ediyor)
+## Faz 2 — Kalıcı Hub ve Veri Modeli ✅ (tag: `faz2`)
 
 | Parça | Durum | Notlar |
 |---|---|---|
@@ -154,7 +208,7 @@ model'ler her açılışta log'dan sıfırdan kurulur.
   okuyucunun gördüğü [1..checkpoint] sonsuza dek sabit; versiyon = log
   pozisyonu. Genel amaçlı snapshot isolation (Scan hâlâ kilitli) Faz 3.
 
-## Faz 3 — Sharding ve Dağıtım ✅
+## Faz 3 — Sharding ve Dağıtım ✅ (tag: `faz3`)
 
 | Parça | Notlar |
 |---|---|
@@ -207,7 +261,7 @@ graph TD
 - **Sharding = ölçek + arıza yalıtımı.** Bir shard'ın izolasyonu
   diğerinin bölgelerini etkilemiyor; blast radius sınırlı.
 
-## Faz 4 — Mesajlaşma ve Dayanıklılık ✅
+## Faz 4 — Mesajlaşma ve Dayanıklılık ✅ (tag: `faz4`)
 
 | Parça | Notlar |
 |---|---|
@@ -241,7 +295,7 @@ graph TD
   fazlasını hızlıca reddetmek; `Retry-After` ile istemciye ne yapacağını
   söylemek.
 
-## Faz 5 — Anlık Arenalar ve Gerçek Zamanlılık ✅
+## Faz 5 — Anlık Arenalar ve Gerçek Zamanlılık ✅ (tag: `faz5`)
 
 | Parça | Notlar |
 |---|---|
@@ -296,7 +350,7 @@ graph TD
   soru "hangi taşıma iyi" değil, "bu veri için hangi garantiyi
   istiyorum".
 
-## Faz 6 — Platform Mühendisliği ✅
+## Faz 6 — Platform Mühendisliği ✅ (tag: `faz6`)
 
 Kod büyümedi, **çalıştığı yer değişti**: tek süreçten Kubernetes'e.
 
@@ -362,7 +416,7 @@ graph TD
   `AuthorizationPolicy` silmek, gerçek ve tek komutla geri alınabilir
   bir ağ bölünmesi üretiyor.
 
-## Faz 7 — Gözlemlenebilirlik ✅
+## Faz 7 — Gözlemlenebilirlik ✅ (tag: `faz7`)
 
 Üç sinyal, tek zincir: **grafikten isteğe, istekten sebebe.**
 
@@ -453,3 +507,23 @@ Proto codegen (kontrat değişince): `buf generate` — araçlar:
 `google.golang.org/protobuf/cmd/protoc-gen-go@latest`,
 `google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`.
 Üretilen kod `gen/` altında commit'lidir (araçsız `go build` çalışsın diye).
+
+## Bilinçli olarak yapılmayanlar
+
+Bir projenin dürüstlüğü, yaptıklarından çok yapmadıklarını nasıl
+yazdığıyla ölçülür. Ayrıntılı gerekçeler ilgili dokümanlarda:
+
+| Ne | Neden | Nerede yazılı |
+| --- | --- | --- |
+| Hub yatay ölçek | Bölgeler ve Raft grupları tek süreçte; kesintisiz dağıtımın önündeki tek yapısal engel — ölçüldü (~4 sn), gizlenmedi | [zero-downtime.md §4](docs/zero-downtime.md) |
+| Vault üretim modu | Dev modunda; sınırı yaşayarak da doğrulandı (Pod yeniden başlayınca sırlar gitti) | [secrets.md §6](docs/secrets.md) |
+| Pushgateway | Arena Pod'ları 90 sn yaşıyor, 15 sn scrape → eksik örnekleme kaçınılmaz | [observability.md §5](docs/observability.md) |
+| Log toplayıcı / izleme arka ucu / Alertmanager | Sinyaller doğru biçimde üretiliyor ama toplanmıyor | [observability.md §8](docs/observability.md) |
+| ArgoCD gerçek senkronizasyonu | Manifestler dry-run ile doğrulandı; depoda git remote yok | [gitops.md §6](docs/gitops.md) |
+| Chaos Mesh | Gecikme/paket kaybı enjeksiyonu yapılmadı; bölünme için zero-trust politikaları kullanıldı | [chaos.md §3](docs/chaos.md) |
+
+## Lisans / kullanım
+
+Öğrenme amaçlı bir portföy projesi. Faz 0 bileşenleri (Raft, LSM,
+aktör sistemi) üretimde kullanılmak üzere değil, **mekanizmayı anlamak
+için** yazıldı; gerçek sistemlerde olgun kütüphaneler tercih edilmeli.
