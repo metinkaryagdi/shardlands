@@ -1,0 +1,25 @@
+# Vault bağlantı ayarları — İSTEĞE BAĞLI KATMAN.
+#
+# Bu ConfigMap yalnız `kubectl apply -f deploy/k8s/vault/` çalıştığında
+# var olur. İş yükleri onu `optional: true` ile referans eder:
+#
+#   envFrom:
+#     - configMapRef:
+#         name: shardlands-vault-config
+#         optional: true          # <- yoksa Pod yine başlar
+#
+# VAULT_ADDR tanımlıysa imzalama anahtarı Vault'tan okunur ve arka
+# planda tazelenir (rotasyon); tanımlı değilse SHARDLANDS_SECRET'a
+# düşülür ve bu durum AÇILIŞTA LOG'A yazılır — sessizce geliştirme
+# sırrıyla koşmak, olabilecek en pahalı hatalardan biri.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shardlands-vault-config
+  namespace: shardlands
+data:
+  VAULT_ADDR: "http://vault.shardlands.svc.cluster.local:8200"
+  VAULT_ROLE: "shardlands"
+  VAULT_KV_MOUNT: "secret"
+  VAULT_KV_PATH: "shardlands/jwt"
+  VAULT_REFRESH: "20s"

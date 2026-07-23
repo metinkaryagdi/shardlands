@@ -12,7 +12,7 @@ nasıl göründüğü ve nasıl bulunduğu yazılı.
 | # | Ders | Tek cümlede |
 | --- | --- | --- |
 | [1](#1-söylediğine-güvenme-kanıtı-iste) | Kanıt iste | İddiayı, iddia edenin kendisi doğrulamaz |
-| [2](#2-panoda-doğru-görünmek-çalışmak-değildir) | Panoda yeşil ≠ çalışıyor | Beş kez düştüm; en sinsisi "0 kesinti" diye okunan bilinmezlikti |
+| [2](#2-panoda-doğru-görünmek-çalışmak-değildir) | Panoda yeşil ≠ çalışıyor | Altı kez düştüm; sonuncusu GitHub'a atmadan hemen önce çıktı |
 | [3](#3-süreç-içi-durum-süreçten-uzun-yaşayan-durumla-buluşunca-patlar) | Gizli durum | "Veritabanı yok" ≠ durumsuz; sayaç da durumdur |
 | [4](#4-sınır-durumları-tasarımın-parçasıdır-sonradan-eklenen-yama-değil) | Sınır durumları | Sonradan bulunursa, genelde üretimde bulunur |
 | [5](#5-türetilebilen-türetilir-türetilemeyen-persist-edilir) | Ne saklanır | Her şeyi kalıcı yapmak da bir hatadır |
@@ -56,7 +56,7 @@ kim çürütebilir"**dir.
 
 ## 2. Panoda doğru görünmek, çalışmak değildir
 
-Bu dersi bir kez öğrenmedim — **beş kez** düştüm, her seferinde farklı
+Bu dersi bir kez öğrenmedim — **altı kez** düştüm, her seferinde farklı
 bir kılıkta. Hepsinin ortak yanı, kontrolün "yeşil" görünmesiydi.
 
 | Ne | Nasıl göründü | Gerçekte |
@@ -66,6 +66,7 @@ bir kılıkta. Hepsinin ortak yanı, kontrolün "yeşil" görünmesiydi.
 | Ölçüm aracım (Faz 6) | "290 hata, kesinti var" | Kendi hız sınırlayıcımıza çarpmış |
 | `/debug/traces` (Faz 7) | Yorumda "politikayla korunuyor" | Yakalayıcı rotanın altında **açık** |
 | Zarif kapanış (Faz 6) | Kod özenle yazılmış | SIGTERM dinlenmiyor, **hiç çalışmıyor** |
+| `up.sh` (kapanışta) | README "Vault isteğe bağlı" diyor | `VAULT_ADDR` sabit → Vault'suz kurulum **hiç açılmıyor** |
 
 İkinci satır en sinsisiydi: `ALLOWED DISRUPTIONS: 0` "tam korunuyor"
 gibi okunur. Oysa 0, koruma değil **bilinmezlik**ti — disruption

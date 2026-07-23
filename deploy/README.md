@@ -33,6 +33,23 @@ Windows:
 
 Sonra `http://localhost:30080`. Temizlik: `./deploy/kind/down.sh`.
 
+Bu komut **tek başına yeterlidir**: mesh, Vault, ArgoCD ve Prometheus
+isteğe bağlı katmanlardır ve kurulmadan da sistem çalışır. Doğrulama:
+
+```bash
+go run ./internal/smoke     # iki oyuncu, 1v1 maç, arena kareleri
+```
+
+> **Bu iddia bir kez yalandı ve düzeltildi.** `VAULT_ADDR` temel
+> ConfigMap'te sabitti; Vault kurulmamış bir kümede hub ve player
+> `no such host` alıp **hiç başlamıyordu** (açılışta Vault sert
+> bağımlılık — bilinçli tasarım). README "isteğe bağlı" diyordu ama
+> manifest zorunlu kılmıştı. Şimdi Vault ayarları ayrı bir ConfigMap'te
+> ve iş yükleri onu `optional: true` ile referans ediyor. GitHub'a
+> atmadan önce yapılan "sıfırdan gerçekten çalışıyor mu" kontrolü
+> yakaladı — belge ile gerçeğin ayrışması, bu projede yakalanan
+> **altıncı** "panoda doğru görünmek" vakası.
+
 ## İmajlar: neden multi-stage + distroless?
 
 Üç Dockerfile da aynı kalıbı izler: `golang:1.26` içinde derle, çıkan

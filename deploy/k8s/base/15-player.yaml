@@ -98,12 +98,18 @@ spec:
               name: grpc
             - containerPort: 9102
               name: admin
-          # Vault ayarları hub ile AYNI ConfigMap'ten: token'ı basan ile
+          # Hub ile AYNI ConfigMap'lerden besleniyor: token'ı basan ile
           # doğrulayan aynı anahtarı görmek zorunda. Ayrı yerlerden
           # beslenselerdi rotasyon sırasında ayrışabilirlerdi.
           envFrom:
             - configMapRef:
                 name: shardlands-config
+            # Vault ayarları İSTEĞE BAĞLI: bu ConfigMap yalnız
+            # deploy/k8s/vault/ uygulandığında var olur. optional:true
+            # olmadan, Vault'suz kurulumda Pod hiç başlamazdı.
+            - configMapRef:
+                name: shardlands-vault-config
+                optional: true
           env:
             - name: SHARDLANDS_SECRET
               valueFrom:

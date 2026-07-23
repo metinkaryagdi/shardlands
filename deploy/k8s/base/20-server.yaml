@@ -32,15 +32,18 @@ data:
   # PLAYER_ADDR dolu olduğunda player servisi bu süreçte açılmaz;
   # gateway ayrı Pod'a gRPC ile bağlanır (mesh'in görebildiği atlama).
   PLAYER_ADDR: "player.shardlands.svc.cluster.local:9101"
-  # VAULT_ADDR doluysa JWT imzalama anahtarı Vault'tan okunur ve
-  # arka planda tazelenir; boşsa SHARDLANDS_SECRET'a düşülür.
-  # Bu iki satır silinirse kurulum sessizce düz metin Secret'a döner —
-  # bu yüzden başlangıçta hangi kaynağın kullanıldığı log'a yazılıyor.
-  VAULT_ADDR: "http://vault.shardlands.svc.cluster.local:8200"
-  VAULT_ROLE: "shardlands"
-  VAULT_KV_MOUNT: "secret"
-  VAULT_KV_PATH: "shardlands/jwt"
-  VAULT_REFRESH: "20s"
+  # VAULT_* AYARLARI BURADA DEĞİL, deploy/k8s/vault/20-config.yaml'da.
+  #
+  # Sebebi acı bir deneyle öğrenildi: bu değerler burada sabitken,
+  # Vault kurulmamış bir kümede hub ve player HİÇ BAŞLAMIYORDU
+  # ("no such host" → keys.Load hata → süreç çıkıyor). README Vault'u
+  # "isteğe bağlı katman" diye tanıtıyordu ama manifest onu zorunlu
+  # kılmıştı — belge ile gerçek ayrışmıştı.
+  #
+  # Şimdi ayrı bir ConfigMap'te ve iş yükleri onu `optional: true` ile
+  # referans ediyor: Vault kuruluysa devreye girer, değilse
+  # SHARDLANDS_SECRET'a düşülür. "İsteğe bağlı" artık manifest
+  # düzeyinde de doğru.
   # ARENA_NAMESPACE dolu olduğunda matchmaking saga'sı arenayı yerel
   # süreçte değil, Arena CRD'si yazarak açar (K8sProvisioner).
   ARENA_NAMESPACE: "shardlands"
@@ -158,6 +161,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: shardlands-config
+            # Vault ayarları İSTEĞE BAĞLI: bu ConfigMap yalnız
+            # deploy/k8s/vault/ uygulandığında var olur. optional:true
+            # olmadan, Vault'suz kurulumda Pod hiç başlamazdı.
+            - configMapRef:
+                name: shardlands-vault-config
+                optional: true
           env:
             - name: SHARDLANDS_SECRET
               valueFrom:
