@@ -108,6 +108,45 @@ spec:
       kind: MeshTLSAuthentication
       name: prometheus-identity
 ---
+# /debug/traces — span adları, süreler ve hata metinleri.
+#
+# Metriklerden DAHA hassas: metrik "ne kadar" der, trace "hangi çağrı
+# nereye gitti" der. Aynı gözlem kimliğine kısıtlanıyor.
+#
+# (Aynı Server'a bağlı üçüncü rota. Yakalayıcı `/` rotası bunu
+# kapsamıyor çünkü daha uzun eşleşme kazanır.)
+apiVersion: policy.linkerd.io/v1beta3
+kind: HTTPRoute
+metadata:
+  name: hub-debug
+  namespace: shardlands
+spec:
+  parentRefs:
+    - group: policy.linkerd.io
+      kind: Server
+      name: hub-http
+      namespace: shardlands
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /debug/
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: hub-debug-prometheus-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: HTTPRoute
+    name: hub-debug
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: prometheus-identity
+---
 # Player'ın yönetim portu (9102): /metrics ve /healthz.
 #
 # Ayrı port olmasının kazancı burada görünüyor: gRPC portu (9101)

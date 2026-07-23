@@ -34,6 +34,7 @@ import (
 	"shardlands/pkg/metrics"
 	"shardlands/pkg/ratelimit"
 	"shardlands/pkg/resilience"
+	"shardlands/pkg/trace"
 	"shardlands/services/arena"
 	"shardlands/services/chat"
 	"shardlands/services/handoff"
@@ -59,6 +60,9 @@ type Config struct {
 	Stats     *stats.Stats         // global sayaçlar (CRDT)
 	Matcher   *matchmaking.Matcher // arena kuyruğu (Faz 5)
 	Handoff   *handoff.Coordinator // hub↔arena transferi (Faz 5)
+	// Tracer, istek-cevap yollarının izlenmesi (Faz 7). Nil olabilir:
+	// testler ve tek süreç geliştirme izleme olmadan da çalışır.
+	Tracer *trace.Recorder
 }
 
 type Gateway struct {
@@ -118,9 +122,57 @@ func New(cfg Config) *Gateway {
 	// yolu çağırabilir (deploy/k8s/mesh/15-policy-metrics.yaml).
 	mux.Handle("GET /metrics", metrics.Handler())
 	mux.Handle("/", noCache(http.FileServer(http.Dir(cfg.ClientDir))))
+
 	g.mux = mux
+	if cfg.Tracer != nil {
+		// İzleme yalnız İSTEK-CEVAP yollarına uygulanıyor. WS ve
+		// statik dosyalar dışarıda: birincisi akış (span modeline
+		// uymuyor), ikincisi ilgisiz gürültü.
+		// Bkz. pkg/trace/propagate.go sonundaki not.
+		traced := http.NewServeMux()
+		traced.Handle("POST /api/login", cfg.Tracer.HTTPMiddleware(mux))
+		traced.Handle("POST /api/trade", cfg.Tracer.HTTPMiddleware(mux))
+		traced.Handle("GET /debug/traces", http.HandlerFunc(g.handleTraces))
+		traced.Handle("/", mux)
+		g.mux = traced
+	}
 	g.ready.Store(true)
 	return g
+}
+
+// handleTraces, son kaydedilen span'ları trace'lere göre GRUPLAYIP
+// ağaç olarak gösterir.
+//
+// Üretimde buranın yerine bir izleme arka ucu (Jaeger/Tempo) gelir;
+// burada amaç zincirin gerçekten kurulduğunu gözle görmek. Uç nokta
+// /debug altında ve mesh politikasıyla korunuyor — span adları ve
+// süreler de keşif malzemesidir.
+func (g *Gateway) handleTraces(w http.ResponseWriter, r *http.Request) {
+	spans := g.cfg.Tracer.Spans()
+	byTrace := map[string][]*trace.Span{}
+	var order []string
+	for _, s := range spans {
+		id := s.TraceID.String()
+		if _, ok := byTrace[id]; !ok {
+			order = append(order, id)
+		}
+		byTrace[id] = append(byTrace[id], s)
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	// En yeni trace en üstte.
+	for i := len(order) - 1; i >= 0; i-- {
+		id := order[i]
+		fmt.Fprintf(w, "trace %s\n", id)
+		for _, s := range byTrace[id] {
+			parent := "-"
+			if s.ParentID != (trace.SpanID{}) {
+				parent = s.ParentID.String()[:8]
+			}
+			fmt.Fprintf(w, "  %-10s %-34s %8.3fms  span=%s parent=%s %s\n",
+				s.Service, s.Name, float64(s.Duration.Microseconds())/1000,
+				s.SpanID.String()[:8], parent, s.Err)
+		}
+	}
 }
 
 // handleHealthz: CANLILIK. "Süreç ayakta mı?" Yanıt veriyorsak evet.

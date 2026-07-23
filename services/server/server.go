@@ -24,6 +24,7 @@ import (
 	"shardlands/pkg/dlock"
 	"shardlands/pkg/es"
 	"shardlands/pkg/metrics"
+	"shardlands/pkg/trace"
 	"shardlands/services/chat"
 	"shardlands/services/gateway"
 	"shardlands/services/handoff"
@@ -92,6 +93,7 @@ type Server struct {
 	provisioner *matchmaking.LocalProvisioner
 	locks       *dlock.Manager
 	handoff     *handoff.Coordinator
+	tracer      *trace.Recorder
 	stopTick    chan struct{}
 	stopOnce    sync.Once
 }
@@ -114,6 +116,12 @@ func Start(cfg Config) (*Server, error) {
 	}
 	s := &Server{stopTick: make(chan struct{})}
 
+	// İzleyici: span'lar halka tamponda tutulur (gözlem katmanı
+	// sınırsız bellek tüketmemeli). Üretimde burası OTLP dışa
+	// aktarıcıya bağlanırdı.
+	tracer := trace.NewRecorder("gateway", 512)
+	s.tracer = tracer
+
 	// İç servisler: gerçek gRPC sunucuları (in-process ama ağ üstünde).
 	// PlayerTarget verilmişse servis ayrı bir Pod'da koşuyordur.
 	playerAddr := cfg.PlayerTarget
@@ -133,7 +141,11 @@ func Start(cfg Config) (*Server, error) {
 	// gecikmeyi hiç göremez ve "bizde her şey yolunda" der.
 	playerConn, err := grpc.NewClient(playerAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(metrics.UnaryClientInterceptor()))
+		grpc.WithChainUnaryInterceptor(
+			metrics.UnaryClientInterceptor(),
+			// Sıra önemli: izleme interceptor'ı metriklerden SONRA
+			// gelir ki span, metrik ölçümünü de kapsasın.
+			tracer.UnaryClientInterceptor()))
 	if err != nil {
 		s.Stop()
 		return nil, err
@@ -282,6 +294,7 @@ func Start(cfg Config) (*Server, error) {
 		Trades:    trades,
 		Stats:     s.stats,
 		Matcher:   s.matcher,
+		Tracer:    tracer,
 	})
 	// Kurulum döngüsünü kır: koordinatör gateway'i SessionPort olarak
 	// kullanır, gateway koordinatörü handoff için; matcher da gateway'i
@@ -303,7 +316,9 @@ func (s *Server) serveGRPC(addr string, register func(*grpc.Server)) (string, er
 		return "", err
 	}
 	// Tüm iç gRPC sunucuları aynı RED ölçümünü paylaşır.
-	gs := grpc.NewServer(grpc.UnaryInterceptor(metrics.UnaryServerInterceptor()))
+	gs := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		metrics.UnaryServerInterceptor(),
+		s.tracer.UnaryServerInterceptor()))
 	register(gs)
 	s.grpcSrvs = append(s.grpcSrvs, gs)
 	go gs.Serve(lis)

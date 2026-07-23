@@ -369,6 +369,39 @@ Dünya tick'i bütçesinin **binde birini** kullanıyor — 20Hz döngünün
 mikro-optimizasyonların kümede ne kadar geniş bir marj bıraktığının
 ilk somut ölçümü.
 
+### İzleme: çıkarımı ölçüme çevirmek
+
+Metrik adımında "aradaki 7.3 ms ağ + mesh olmalı" diye **çıkarım**
+yapmıştık. İzleme bunu tek bir istekte **ölçüyor**.
+
+`pkg/trace` sıfırdan yazıldı (W3C Trace Context). Kümede gözlenen tek
+bir giriş isteği:
+
+```
+hub Pod'unda (gateway süreci):
+  trace c8d4495599cff762e48c4d7e4bbb2de9
+    gateway  POST /api/login                    9.064 ms  span=63eea911 parent=-
+    gateway  client PlayerService/CreatePlayer  8.958 ms  span=f73880b6 parent=63eea911
+
+player Pod'unda (AYRI SÜREÇ, ayrı düğüm):
+    player   server PlayerService/CreatePlayer  0.031 ms  span=146572c7 parent=f73880b6
+```
+
+Aynı trace kimliği, doğru ebeveyn zinciri. **8.958 − 0.031 ≈ 8.9 ms**
+ağ + iki mesh proxy'sinde geçiyor; uygulama kodunun payı 31
+mikrosaniye. Aynı sonucu p95 karşılaştırmasıyla tahmin etmiştik, şimdi
+tek bir isteğin üstünde görüyoruz.
+
+Yanıt başlığına `traceparent` konuyor: "şu isteğin trace id'si neydi"
+sorusunun cevabı istemcide.
+
+**Neyi izlemediğimiz de bir karar:** WS üstündeki oyuncu komutları
+(20Hz girdi akışı) hiç span açmıyor. İki sebep — hacim (faydalı
+sinyali gürültüye boğardı) ve model uyumsuzluğu (trace istek-cevap
+ağacı varsayar, WS oturumu uzun ömürlü akıştır; "oturum = bir trace"
+saatlerce açık kalırdı). O yolun sağlığı metriklerle izleniyor.
+**"Her şeyi izle" bir hedef değil, bir maliyet hatasıdır.**
+
 ### Doygunluk sinyali: dead letters
 
 `shardlands_dead_letters_total` bir HATA değil **doygunluk** sayacıdır.

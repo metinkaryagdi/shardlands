@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/internal/keys"
 	"shardlands/pkg/metrics"
+	"shardlands/pkg/trace"
 	"shardlands/services/player"
 )
 
@@ -58,8 +60,15 @@ func main() {
 	// bir port açmak, gRPC portunu çift protokole zorlamaktan basit ve
 	// mesh politikası tarafında da temiz: yönetim portu yalnız
 	// Prometheus kimliğine açılırken 9101 yalnız hub'a açık kalıyor.
+	// Player kendi izleyicisini kurar ve gelen traceparent'ı okur:
+	// span'ları hub'ın kaydına yazamaz (ayrı süreç), ama AYNI TRACE
+	// kimliğini taşır. Gerçek kurulumda ikisi de aynı arka uca
+	// (Jaeger/Tempo) gönderir ve ağaç orada birleşir.
+	tracer := trace.NewRecorder("player", 256)
+
 	adminMux := http.NewServeMux()
 	adminMux.Handle("GET /metrics", metrics.Handler())
+	adminMux.Handle("GET /debug/traces", tracesHandler(tracer))
 	adminMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok"))
 	})
@@ -75,7 +84,9 @@ func main() {
 		log.Fatalf("player: listen: %v", err)
 	}
 	// Interceptor: RED metrikleri tek yerde, bütün metotlar için.
-	gs := grpc.NewServer(grpc.UnaryInterceptor(metrics.UnaryServerInterceptor()))
+	gs := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		metrics.UnaryServerInterceptor(),
+		tracer.UnaryServerInterceptor()))
 	pb.RegisterPlayerServiceServer(gs, player.NewKeyring(keyring, instance))
 	go func() {
 		if err := gs.Serve(lis); err != nil {
@@ -102,4 +113,18 @@ func shortInstance(s string) string {
 		return s[i+1:]
 	}
 	return s
+}
+
+// tracesHandler, player'ın kendi span'larını gösterir. Hub'daki
+// karşılığıyla aynı trace kimliğini taşırlar; zincirin süreç sınırını
+// geçtiği buradan doğrulanır.
+func tracesHandler(rec *trace.Recorder) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		for _, s := range rec.Spans() {
+			fmt.Fprintf(w, "trace=%s span=%s parent=%s %-28s %7.3fms %s\n",
+				s.TraceID, s.SpanID.String()[:8], s.ParentID.String()[:8],
+				s.Name, float64(s.Duration.Microseconds())/1000, s.Err)
+		}
+	})
 }
