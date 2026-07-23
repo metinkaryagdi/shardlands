@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"log"
 	"os"
@@ -53,6 +55,17 @@ func main() {
 		PlayerTarget: os.Getenv("PLAYER_ADDR"),
 		// Boşsa gömülü NATS; Kubernetes'te NATS_URL verilir.
 		NATSURL: os.Getenv("NATS_URL"),
+		// Maç kimliklerinin süreç ön eki.
+		//
+		// Neden Pod adı DEĞİL? StatefulSet Pod adı ("shardlands-0")
+		// yeniden başlatmada aynı kalır; oysa çözmemiz gereken çakışma
+		// tam olarak yeniden başlatmadan doğuyor — süreç içi sayaç
+		// sıfırlanıp "m1"i tekrar üretiyor ve kümede duran eski
+		// "arena-m1" kaydına çarpıyor (chaos deneyi 5).
+		//
+		// Bu yüzden ön ek SÜREÇ BAŞINA rastgele. Aynı anda birden çok
+		// hub kopyası çalışsa onları da ayırırdı.
+		Instance: processNonce(),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -67,4 +80,18 @@ func main() {
 	<-sig
 	log.Println("kapanıyor...")
 	srv.Stop()
+}
+
+// processNonce, bu sürece özgü kısa bir ön ek üretir. Kaynak
+// crypto/rand: zaman damgası kullansaydık hızlı yeniden başlatmalarda
+// (aynı saniye içinde) çakışabilirdi.
+func processNonce() string {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Rastgelelik alınamıyorsa çakışma riskini gizlemek yerine
+		// açıkça bildir; süreç yine de çalışabilir.
+		log.Printf("uyarı: süreç ön eki üretilemedi (%v), kimlikler çakışabilir", err)
+		return ""
+	}
+	return hex.EncodeToString(b[:])
 }

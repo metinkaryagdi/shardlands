@@ -80,5 +80,12 @@ spec:
                 startTime:
                   type: string
                   format: date-time
+                endTime:
+                  type: string
+                  format: date-time
+                  description: >-
+                    Terminal faza geçiş anı. Kayıt bu andan kısa süre
+                    sonra toplanır; süresiz kalan kayıtlar aynı adı
+                    yeniden üreten sunucularla çakışıyordu.
                 message:
                   type: string

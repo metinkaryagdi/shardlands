@@ -68,7 +68,12 @@ type ArenaStatus struct {
 	PodName   string       `json:"podName,omitempty"`
 	Endpoint  string       `json:"endpoint,omitempty"`
 	StartTime *metav1.Time `json:"startTime,omitempty"`
-	Message   string       `json:"message,omitempty"`
+	// EndTime, terminal faza geçiş anı. Kaydın ne zaman toplanacağını
+	// buradan hesaplıyoruz: biten maç bir süre görünür kalsın (hata
+	// ayıklama), sonra silinsin. Süresiz bırakmak kimlik çakışmasına
+	// yol açıyordu (bkz. controller, chaos deneyi 5).
+	EndTime *metav1.Time `json:"endTime,omitempty"`
+	Message string       `json:"message,omitempty"`
 }
 
 // Arena, özel kaynak.
@@ -108,6 +113,10 @@ func (in *ArenaStatus) DeepCopyInto(out *ArenaStatus) {
 	if in.StartTime != nil {
 		t := *in.StartTime
 		out.StartTime = &t
+	}
+	if in.EndTime != nil {
+		t := *in.EndTime
+		out.EndTime = &t
 	}
 }
 

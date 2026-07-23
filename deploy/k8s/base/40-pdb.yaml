@@ -21,24 +21,40 @@ spec:
   selector:
     matchLabels:
       app: shardlands-player
----
-# ARENA POD'LARI — devam eden maçları koru.
 #
-# maxUnavailable: 0 = "hiçbir arena Pod'u gönüllü olarak tahliye
-# edilemez". Sert bir kural; düğüm boşaltmayı BLOKLAR. Burada kabul
-# edilebilir olmasının tek sebebi arenaların ömrünün sınırlı olması:
-# TTL 5 dakika, tipik maç 90 saniye. Drain en fazla o kadar bekler.
+# ARENA İÇİN PDB YOK — ve bu deneyle öğrenilmiş bir karar.
 #
-# Takas açıkça şu: bir maçı yarıda kesmektense düğüm bakımını birkaç
-# dakika geciktirmeyi seçiyoruz. Uzun ömürlü iş yükleri için aynı ayar
-# felakettir — drain hiç bitmez.
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: arena
-  namespace: shardlands
-spec:
-  maxUnavailable: 0
-  selector:
-    matchLabels:
-      app: shardlands-arena
+# Önce `maxUnavailable: 0` ile bir arena PDB'si yazdık: "devam eden maç
+# gönüllü olarak tahliye edilemesin". Manifest doğru görünüyordu ve
+# `kubectl get pdb` çıktısı da ikna ediciydi:
+#
+#   arena    N/A   0   ALLOWED DISRUPTIONS: 0
+#
+# "0 izin verilen kesinti" tam korunuyor gibi okunur. DEĞİLDİ. Chaos
+# deneyi 6'da API'nin kendi olayı gerçeği söyledi:
+#
+#   CalculateExpectedPodCountFailed: Failed to calculate the number of
+#   expected pods: arenas.shardlands.dev does not implement the scale
+#   subresource
+#
+# NEDEN: disruption denetleyicisi "kaç Pod olmalı" sorusunu, Pod'un
+# sahiplik zincirini yukarı yürüyüp ÖLÇEKLENEBİLİR bir denetleyici
+# (Deployment/ReplicaSet/StatefulSet — `scale` alt kaynağı olan)
+# bularak cevaplar. Arena Pod'larının sahibi bizim Arena CRD'miz ve
+# onda `scale` yok. Beklenen sayı hesaplanamayınca PDB hiçbir şey
+# uygulayamıyor; gösterilen "0" koruma değil BİLİNMEZLİK.
+#
+# Seçenekler ve neden bu:
+#   - CRD'ye scale alt kaynağı eklemek: arena ölçeklenebilir bir iş
+#     yükü değil, `replicas` alanı anlamsız olurdu.
+#   - ownerReference'ı kaldırmak: sahipsiz Pod'lar için PDB çalışır ama
+#     çöp toplama garantisini kaybederdik (Faz 5'in temizlik akışı).
+#   - PDB'yi bırakıp gerçeği yazmak: SEÇİLEN. Devam eden maçın korunması
+#     kısa ömürden geliyor (TTL 5dk, tipik maç 90sn) ve arena Pod'u
+#     düşerse operator onu geri getiriyor — maç durumu kaybolur ama
+#     sistem kendini toparlar (chaos deneyi 5).
+#
+# Genel ders: bir güvenlik/dayanıklılık kontrolünün panoda doğru
+# görünmesi, çalıştığı anlamına gelmiyor. Faz 6'da bunun üçüncü örneği
+# (diğerleri: sessizce meshsiz açılan Pod'lar, hız sınırını kesinti
+# sanan ölçüm aracı).

@@ -65,6 +65,9 @@ type Config struct {
 	// testler). Kubernetes'te ayrı bir NATS StatefulSet'inin adresi
 	// verilir — bus artık süreç ömrüne bağlı olmaz.
 	NATSURL string
+	// Instance, süreç ön eki (kümede Pod adı). Maç kimliklerinin
+	// yeniden başlatmadan sonra çakışmasını engeller.
+	Instance string
 }
 
 type Server struct {
@@ -146,7 +149,7 @@ func Start(cfg Config) (*Server, error) {
 		s.provisioner = matchmaking.NewLocalProvisioner()
 		prov = s.provisioner
 	}
-	s.matcher = matchmaking.NewMatcher(events, prov, nil)
+	s.matcher = matchmaking.NewMatcherInstance(events, prov, nil, cfg.Instance)
 	if _, err := s.serveGRPC(cfg.MatchmakingAddr, func(gs *grpc.Server) {
 		pb.RegisterMatchmakingServiceServer(gs, matchmaking.New(s.matcher))
 	}); err != nil {

@@ -296,12 +296,90 @@ graph TD
   soru "hangi taşıma iyi" değil, "bu veri için hangi garantiyi
   istiyorum".
 
+## Faz 6 — Platform Mühendisliği ✅
+
+Kod büyümedi, **çalıştığı yer değişti**: tek süreçten Kubernetes'e.
+
+| Parça | Notlar |
+|---|---|
+| Konteynerleştirme + K8s | [deploy/README.md](deploy/README.md) — distroless, StatefulSet/Deployment ayrımı, iki farklı dar RBAC |
+| Service mesh + zero trust | [docs/service-mesh.md](docs/service-mesh.md) — Linkerd, mTLS, `default-inbound-policy: deny` |
+| GitOps | [docs/gitops.md](docs/gitops.md) — ArgoCD app-of-apps, sync wave, prune + selfHeal |
+| Kesintisiz dağıtım | [docs/zero-downtime.md](docs/zero-downtime.md) — ölçülmüş: player 0 hata, hub ~4sn |
+| Vault + rotasyon | [docs/secrets.md](docs/secrets.md) — sır sıfırı, anahtar zinciri, canlı rotasyon |
+| Chaos engineering | [docs/chaos.md](docs/chaos.md) — 6 deney, 2 gerçek hata bulundu |
+
+```mermaid
+graph TD
+    subgraph Git
+      M[manifestler] --> ARGO[ArgoCD]
+    end
+    ARGO -->|"sync wave -2/-1/0"| K8S[(küme)]
+    subgraph "namespace: shardlands (default-inbound-policy: deny)"
+      HUB["hub<br/>StatefulSet + PVC"] -->|mTLS| PL["player<br/>Deployment ×2"]
+      HUB -->|mTLS| NATS["NATS<br/>opaque port"]
+      HUB -->|mTLS| V[(Vault)]
+      PL -->|mTLS| V
+      HUB -->|Arena CRD| OP["operator ×2<br/>lider seçimi"]
+      OP --> AP["arena Pod<br/>native sidecar"]
+      HUB -->|"mTLS, gRPC vekil"| AP
+    end
+```
+
+### Faz 6 kapanış — dersler
+
+- **"Kod var" ile "kod çalışıyor" ayrı şeyler.** Zarif kapanış yolu
+  özenle yazılmıştı ve kümede **hiç çalışmıyordu**: süreç yalnız
+  `os.Interrupt` dinliyordu, kubelet ise SIGTERM yolluyor. Yerelde
+  `Ctrl+C` ile test etmek bunu asla göstermezdi.
+- **Panoda doğru görünmek, çalışmak değildir.** Üç kez aynı tuzağa
+  düştük: (1) enjektör hazır olmadan açılan Pod'lar sessizce meshsiz
+  kaldı ve her şey yeşil göründü, (2) ölçüm aracı kendi hız
+  sınırlayıcımızı kesinti sandı, (3) arena PDB'si `ALLOWED
+  DISRUPTIONS: 0` diyordu ama hiç çalışmıyordu (CRD'de `scale` yok).
+- **"Söylediğine güvenme, kanıtı iste" fazın gizli teması oldu.**
+  Fencing token (kanıtı Raft verir) → mesh mTLS (linkerd-identity) →
+  Vault (kube-apiserver). Üç farklı katman, tek ilke.
+- **Süreç içi sayaçlar, süreçten uzun yaşayan durumla buluşunca
+  patlar.** İki kez, iki ayrı yerde: player kimlik sayacı (iki kopya
+  aynı `p-1`'i bastı, **hiçbir yerde hata oluşmadan**) ve maç kimliği
+  sayacı (yeniden başlatmadan sonra kümede duran eski kayda çarptı).
+  İkisi de yalnız ölçek/kaos altında görünür oldu.
+- **Mesh, hata mesajlarının katmanını kaydırır.** `appProtocol: grpc`
+  yazmak bağlantıyı HTTP/1'e düşürdü; belirti uygulamada TLS hatası,
+  proxy'de yetkilendirme reddi, diagnostics'te "yetkili" idi. Teşhis
+  hipotezle değil **tek değişken değiştirerek** yapılmalı.
+- **En dar güvenlik profili, kendi ayrıcalığını yöneten imajlarla
+  çatışır.** Her çatışmada "yetkiyi geri ver" ve "ihtiyacı ortadan
+  kaldır" seçenekleri var; ikincisi tercih edilmeli (Vault'u root
+  yerine doğrudan `vault` kullanıcısıyla başlatmak gibi).
+- **Kesintisiz dağıtım bir ayar değil zincirdir** ve zincir en zayıf
+  halkası kadar sağlam: kopya sayısı, `maxUnavailable: 0`, readiness,
+  SIGTERM, preStop, PDB, **istemci yeniden bağlanması**. Hub'ın tek
+  kopya olması onu yapısal olarak kesintisiz olamaz kılıyor — ölçtük ve
+  gizlemedik.
+- **Güvenlik katmanı kaos aracı olarak da çalışıyor.** Bir
+  `AuthorizationPolicy` silmek, gerçek ve tek komutla geri alınabilir
+  bir ağ bölünmesi üretiyor.
+
 ## Çalıştırma
 
 ```powershell
 go run ./cmd/server        # http://localhost:8080 — iki sekme aç
 go test -race ./...        # tüm testler
 ```
+
+Kümede (kind):
+
+```bash
+./deploy/kind/up.sh        # imajlar + küme + manifestler
+go run ./internal/smoke    # uçtan uca duman testi
+./deploy/kind/down.sh      # temizlik
+```
+
+İsteğe bağlı katmanlar: `./deploy/mesh/install.sh` (Linkerd),
+`kubectl apply -f deploy/k8s/vault/` (Vault),
+`./deploy/gitops/install.sh` (ArgoCD).
 
 Proto codegen (kontrat değişince): `buf generate` — araçlar:
 `go install github.com/bufbuild/buf/cmd/buf@latest`,

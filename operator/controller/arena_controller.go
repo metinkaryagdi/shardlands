@@ -29,6 +29,9 @@ const (
 	defaultTTL = 5 * time.Minute
 	// defaultImage, arena sunucusu imajı.
 	defaultImage = "shardlands/arena:dev"
+	// retainAfterEnd, biten arena kaydının silinmeden önce görünür
+	// kalacağı süre (hata ayıklama penceresi).
+	retainAfterEnd = 2 * time.Minute
 	// finalizer, temizlik garantisi için (Pod'u biz sildik mi?).
 	finalizer = "shardlands.dev/arena-cleanup"
 )
@@ -70,9 +73,30 @@ func (r *ArenaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Terminal aşama: Pod'u temizle, kaynağı bırak (TTL/GC silecek).
+	// Terminal aşama: Pod'u temizle, sonra KAYDI DA topla.
+	//
+	// Kaydı süresiz bırakmak zararsız görünüyordu; değildi. Bitmiş bir
+	// Arena kaydı, aynı adı yeniden üreten bir sunucu için görünmez bir
+	// mayındır: Create "zaten var" der, sağlayıcı bunu saga yeniden
+	// denemesi sanar ve Running bekler — ama kayıt Completed olduğu için
+	// o an hiç gelmez. Chaos deneyi 5'te tam olarak bu yaşandı.
+	//
+	// retainAfterEnd kadar bekliyoruz ki `kubectl get arenas` çıktısında
+	// biten maç bir süre görünsün (hata ayıklama), sonra siliniyor.
 	if a.Status.Phase == arenav1.PhaseCompleted || a.Status.Phase == arenav1.PhaseFailed {
-		return ctrl.Result{}, r.deletePod(ctx, &a)
+		if err := r.deletePod(ctx, &a); err != nil {
+			return ctrl.Result{}, err
+		}
+		if a.Status.EndTime == nil {
+			now := metav1.NewTime(r.now())
+			a.Status.EndTime = &now
+			return ctrl.Result{Requeue: true}, r.Status().Update(ctx, &a)
+		}
+		if kalan := retainAfterEnd - r.now().Sub(a.Status.EndTime.Time); kalan > 0 {
+			return ctrl.Result{RequeueAfter: kalan}, nil
+		}
+		lg.Info("biten arena kaydı toplanıyor", "arena", a.Name)
+		return ctrl.Result{}, client.IgnoreNotFound(r.Delete(ctx, &a))
 	}
 
 	// TTL: arena fazla yaşadıysa tamamlandı say (kaçak instance emniyeti).

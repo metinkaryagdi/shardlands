@@ -66,19 +66,49 @@ type Matcher struct {
 	registry map[string]QueuedPlayer   // playerID → kayıt (oturum ref'i)
 	inQueue  map[string]string         // playerID → mode (çifte kuyruk yok)
 
-	nextID  atomic.Int64
-	matches atomic.Int64 // başarıyla kurulan maç sayısı (gözlem)
+	nextID atomic.Int64
+	// instance, süreç ön eki (kümede Pod adından). Boşsa eski
+	// davranış: "m1", "m2"...
+	instance string
+	matches  atomic.Int64 // başarıyla kurulan maç sayısı (gözlem)
 }
 
 // NewMatcher, eşleştiriciyi kurar. store nil olabilir (denetim izi
 // yazılmaz); assigner nil ise atama adımı no-op'tur.
 func NewMatcher(store *es.Store, prov Provisioner, assigner Assigner) *Matcher {
+	return NewMatcherInstance(store, prov, assigner, "")
+}
+
+// NewMatcherInstance, maç kimliklerine SÜREÇ ÖN EKİ ekler.
+//
+// Neden gerekti? nextID süreç içi bir sayaçtır; sunucu yeniden
+// başlayınca sıfırlanır ve ilk maç yine "m1" olur. Kümede arena
+// kayıtları süreçten UZUN yaşadığı için (terminal fazdaki Arena CR'ı
+// temizlenene kadar durur) yeni "arena-m1", eskisiyle çakışır. Sağlayıcı
+// bunu saga yeniden denemesi sanıp Running bekler, kayıt Completed
+// olduğu için asla gelmez ve maç zaman aşımına düşer.
+//
+// Bu, player'ın kimlik sayacıyla BİREBİR aynı sınıf hata (bkz.
+// docs/zero-downtime.md §2) ve chaos deneyinde ortaya çıktı: hub
+// Pod'unu öldürmeden görünmüyordu. Ders şu: süreç içi sayaçlar,
+// süreçten uzun yaşayan durumla buluştuğu her yerde tehlikelidir.
+func NewMatcherInstance(store *es.Store, prov Provisioner, assigner Assigner, instance string) *Matcher {
 	return &Matcher{
 		store: store, prov: prov, assigner: assigner,
+		instance: instance,
 		queues:   map[string][]QueuedPlayer{},
 		registry: map[string]QueuedPlayer{},
 		inQueue:  map[string]string{},
 	}
+}
+
+// matchID, süreç ön ekiyle (varsa) maç kimliği üretir.
+func (m *Matcher) matchID() string {
+	n := m.nextID.Add(1)
+	if m.instance == "" {
+		return fmt.Sprintf("m%d", n)
+	}
+	return fmt.Sprintf("m%s-%d", m.instance, n)
 }
 
 // SetAssigner, atama bileşenini sonradan takar (gateway kurulum
@@ -171,7 +201,7 @@ func (m *Matcher) formLocked(mode string) *match {
 	}
 
 	mt := &match{
-		id:      fmt.Sprintf("m%d", m.nextID.Add(1)),
+		id:      m.matchID(),
 		mode:    mode,
 		players: picked,
 		teams:   make([]int, need),

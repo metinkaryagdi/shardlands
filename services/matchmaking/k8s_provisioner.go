@@ -76,6 +76,20 @@ func (p *K8sProvisioner) Provision(ctx context.Context, spec ArenaSpec) (*Handle
 			return nil, err
 		}
 		// İdempotent: aynı maç için tekrar çağrı (saga yeniden denemesi).
+		//
+		// AMA: var olan kayıt TERMİNAL fazdaysa bu bir yeniden deneme
+		// değil KİMLİK ÇAKIŞMASIdır — bitmiş bir maçın kaydı duruyor ve
+		// biz aynı adı yeniden ürettik. Ayırt etmezsek Running bekleyip
+		// 30sn sonra sessizce zaman aşımına düşeriz; hata mesajı da
+		// "hazır olmadı" der ve gerçek sebebi gizler.
+		var got arenav1.Arena
+		if err := p.Client.Get(ctx, client.ObjectKey{Namespace: p.namespace(), Name: spec.ID}, &got); err == nil {
+			if got.Status.Phase == arenav1.PhaseCompleted || got.Status.Phase == arenav1.PhaseFailed {
+				return nil, fmt.Errorf(
+					"matchmaking: %s adında BİTMİŞ bir arena kaydı var (faz %s) — kimlik çakışması",
+					spec.ID, got.Status.Phase)
+			}
+		}
 	}
 
 	// Operator'ün Pod'u ayağa kaldırıp endpoint yayınlamasını bekle.

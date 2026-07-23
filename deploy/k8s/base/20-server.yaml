@@ -157,6 +157,14 @@ spec:
                 secretKeyRef:
                   name: shardlands-secret
                   key: SHARDLANDS_SECRET
+            # Gözlem/log için Pod adı. DİKKAT: maç kimliği ön eki olarak
+            # KULLANILMAZ — StatefulSet Pod adı ("shardlands-0") yeniden
+            # başlatmada değişmediği için çakışmayı ayırt etmezdi.
+            # Ön ek süreç başına rastgele üretiliyor (cmd/server).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           volumeMounts:
             - name: data
               mountPath: /data

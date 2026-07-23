@@ -304,6 +304,72 @@ davranıştır. Araç artık 429'u ayrı sayıyor ve varsayılan aralık
 sınırlayıcının doldurma hızına (1/sn) eşit. **Ölçüm aracının ne
 ölçtüğünü bilmesi gerekir.**
 
+## Chaos engineering
+
+Kavramsal anlatım: [docs/chaos.md](../docs/chaos.md). Deneyler
+`deploy/chaos/` altında; her biri **hipotezi önce yazar**, sonra ölçer.
+
+```bash
+bash deploy/chaos/01-pod-kill.sh
+bash deploy/chaos/02-dependency-partition.sh
+bash deploy/chaos/03-arena-and-drain.sh
+```
+
+Bölünme aracı olarak zero-trust politikaları kullanılıyor: bir
+`AuthorizationPolicy`'yi silmek, mesh proxy'sinin o bağlantıyı anında
+reddetmesi demek. **Güvenlik katmanı kaos aracı olarak da çalışıyor** —
+Chaos Mesh kurmaya gerek kalmadan gerçek, bağlantı düzeyinde,
+tek komutla geri alınabilir bir bölünme.
+
+### Ölçülen sonuçlar
+
+| # | Fay | Hipotez | Sonuç |
+| --- | --- | --- | --- |
+| 1 | player Pod'u öldür | kesinti yok | **29/29 başarılı, 0 hata** |
+| 2 | hub Pod'u öldür | kısa kesinti, kendi kendine dönüş | **~3sn**, WAL oynatıldı, restart 0 |
+| 3 | Vault'a erişimi kes | girişler sürer, tazeleme düşer | **36/36 başarılı**, 3 tazeleme hatası loglandı |
+| 4 | NATS'e erişimi kes | hub ayakta kalır | **29/29 başarılı**, hub restart 0 |
+| 5 | arena Pod'unu maç ortasında öldür | operator geri getirir, maç durumu kaybolur | **Doğrulandı** — Pod döndü, kareler 510'da kesildi |
+| 6 | düğüm boşalt | PDB'ler saygı görür | **player: korundu; arena: PDB ÇALIŞMIYOR** (aşağıda) |
+
+3 ve 4, Faz 4'te kod yorumlarında defalarca iddia ettiğimiz
+**"bağımlılık arızasında kendini öldürme"** ilkesinin ilk gerçek kanıtı.
+
+### Chaos'un bulduğu iki gerçek hata
+
+**(a) Maç kimliği çakışması — sessiz ve yalnız yeniden başlatmada.**
+`nextID` süreç içi bir sayaç; hub yeniden başlayınca sıfırlanıp yine
+`m1` üretiyordu. Kümede biten maçın `arena-m1` kaydı duruyordu →
+`Create` "zaten var" dedi → sağlayıcı bunu saga yeniden denemesi sanıp
+`Running` bekledi → kayıt `Completed` olduğu için hiç gelmedi → maç 30
+saniye sonra sessizce zaman aşımına düştü.
+
+Player'ın kimlik sayacıyla **birebir aynı sınıf hata**
+([zero-downtime.md §2](../docs/zero-downtime.md)) ve yalnız Pod'u
+öldürünce görünür oldu. Üç yerden birden kapatıldı: süreç başına
+rastgele ön ek (`cmd/server`), sağlayıcıda terminal-faz kontrolü (artık
+30sn beklemek yerine "kimlik çakışması" diyor) ve operator'ün biten
+kayıtları toplaması (`retainAfterEnd`).
+
+**(b) Arena PDB'si hiç çalışmıyormuş.**
+`kubectl get pdb` çıktısı `ALLOWED DISRUPTIONS: 0` diyordu ve bu "tam
+korunuyor" gibi okunuyordu. API'nin kendi olayı gerçeği söyledi:
+
+```
+CalculateExpectedPodCountFailed: arenas.shardlands.dev does not
+implement the scale subresource
+```
+
+Disruption denetleyicisi "kaç Pod olmalı" sorusunu sahiplik zincirinde
+**ölçeklenebilir** bir denetleyici arayarak cevaplıyor; bizim Arena
+CRD'mizde `scale` yok. Gösterilen 0, koruma değil **bilinmezlik**.
+Arena PDB'si kaldırıldı ve gerekçesi
+[40-pdb.yaml](k8s/base/40-pdb.yaml)'a yazıldı.
+
+Faz 6'nın tekrar eden dersi burada üçüncü kez çıktı: **panoda doğru
+görünmek, çalışmak değildir** (diğerleri: sessizce meshsiz açılan
+Pod'lar, hız sınırını kesinti sanan ölçüm aracı).
+
 ## Sırlar (Vault)
 
 Kavramsal anlatım: [docs/secrets.md](../docs/secrets.md).
