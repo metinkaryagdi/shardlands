@@ -119,7 +119,42 @@ var (
 		Name: "shardlands_key_refresh_total",
 		Help: "İmzalama anahtarı tazeleme sonuçları.",
 	}, []string{"result"})
+
+	// ---- Doygunluk (USE'un S'si) ----
+
+	// DeadLetters, teslim edilemeyen aktör mesajları.
+	//
+	// Bu bir DOYGUNLUK sinyalidir, hata değil. Faz 0'da mailbox'ları
+	// DropNewest yaptık: yavaş bir tüketici dünyayı yavaşlatmasın diye
+	// mesaj düşürmeyi BİLEREK seçtik. Sayaç sıfırdan büyükse sistem
+	// tasarlandığı gibi çalışıyor ama BASKI ALTINDA demektir —
+	// oyuncular kare atlamaya başlamadan görülmesi gereken şey bu.
+	//
+	// Etiket yok: hangi aktörün düşürdüğü sorusu kimlik başına seri
+	// üretirdi (oturum aktörleri oyuncu sayısı kadar). O soru log'un işi.
+	DeadLetters = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "shardlands_dead_letters_total",
+		Help: "Teslim edilemeyen aktör mesajı (doygunluk sinyali).",
+	})
 )
+
+// NewCounterVecOnce ve NewHistogramOnce, metrikleri tanımlayıp KAYDA
+// ekler. Ayrı yardımcı olmalarının sebebi grpc.go'nun kendi
+// metriklerini aynı kayda ekleyebilmesi — init() sırası dosyalar
+// arasında garanti olmadığı için kayıt işini tanım anına bağlıyoruz.
+func NewCounterVecOnce(name, help string, labels ...string) *prometheus.CounterVec {
+	c := prometheus.NewCounterVec(prometheus.CounterOpts{Name: name, Help: help}, labels)
+	Reg.MustRegister(c)
+	return c
+}
+
+func NewHistogramOnce(name, help string, buckets []float64) prometheus.Histogram {
+	h := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: name, Help: help, Buckets: buckets,
+	})
+	Reg.MustRegister(h)
+	return h
+}
 
 func init() {
 	Reg.MustRegister(
@@ -131,7 +166,7 @@ func init() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 
 		LoginTotal, LoginDuration, Sessions, CommandsShed,
-		WorldTickDuration, MatchTotal, KeyRefreshTotal,
+		WorldTickDuration, MatchTotal, KeyRefreshTotal, DeadLetters,
 	)
 }
 

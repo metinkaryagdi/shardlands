@@ -108,6 +108,43 @@ spec:
       kind: MeshTLSAuthentication
       name: prometheus-identity
 ---
+# Player'ın yönetim portu (9102): /metrics ve /healthz.
+#
+# Ayrı port olmasının kazancı burada görünüyor: gRPC portu (9101)
+# yalnız hub kimliğine açıkken bu port yalnız Prometheus kimliğine
+# açılıyor. Tek portta olsalardı ya ikisini de aynı listeye koyacaktık
+# ya da rota bazlı ayrıma girecektik.
+#
+# Kubelet probları da bu porta gidiyor ama onlar için politika
+# gerekmiyor: Linkerd, Pod spec'inde BEYAN EDİLMİŞ probe yollarını
+# kendiliğinden yetkilendirir.
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: player-admin
+  namespace: shardlands
+spec:
+  podSelector:
+    matchLabels:
+      app: shardlands-player
+  port: admin
+  proxyProtocol: HTTP/1
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: player-admin-prometheus-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: player-admin
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: prometheus-identity
+---
 # Operator'ün metrik portu (8081): controller-runtime'ın hazır
 # metrikleri — reconcile süresi, kuyruk derinliği, hata oranı.
 # Kendi kodumuzu enstrümante etmeden gelen bedava sinyal.

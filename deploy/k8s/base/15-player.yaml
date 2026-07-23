@@ -74,6 +74,13 @@ spec:
     metadata:
       labels:
         app: shardlands-player
+      annotations:
+        # Metrikler AYRI PORTTA (9102). gRPC portunu çift protokole
+        # zorlamaktansa ikinci bir port açmak hem basit hem de politika
+        # tarafında temiz: 9101 yalnız hub'a, 9102 yalnız Prometheus'a.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9102"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: shardlands-player
       # 30sn: GracefulStop akıştaki gRPC çağrılarını bitirene kadar
@@ -89,6 +96,8 @@ spec:
           ports:
             - containerPort: 9101
               name: grpc
+            - containerPort: 9102
+              name: admin
           # Vault ayarları hub ile AYNI ConfigMap'ten: token'ı basan ile
           # doğrulayan aynı anahtarı görmek zorunda. Ayrı yerlerden
           # beslenselerdi rotasyon sırasında ayrışabilirlerdi.
@@ -126,16 +135,20 @@ spec:
               # kabuk yok, `exec: ["sh","-c","sleep 5"]` çalışmaz.
               sleep:
                 seconds: 5
-          # gRPC sunucusu HTTP probu sunmuyor; TCP probu "port açık mı"
-          # sorusunu cevaplar. gRPC health protokolü Faz 7'nin işi.
+          # Artık gerçek bir HTTP sağlık ucu var (yönetim portunda).
+          # TCP probu yalnız "port açık mı" derdi; /healthz "süreç
+          # cevap verebiliyor mu" der — sıkışmış bir süreç TCP'yi
+          # açık tutar ama HTTP'ye cevap veremez.
           readinessProbe:
-            tcpSocket:
-              port: 9101
+            httpGet:
+              path: /healthz
+              port: 9102
             initialDelaySeconds: 2
             periodSeconds: 5
           livenessProbe:
-            tcpSocket:
-              port: 9101
+            httpGet:
+              path: /healthz
+              port: 9102
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:

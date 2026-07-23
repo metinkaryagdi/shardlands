@@ -15,6 +15,7 @@ import (
 	"flag"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -24,11 +25,13 @@ import (
 
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/internal/keys"
+	"shardlands/pkg/metrics"
 	"shardlands/services/player"
 )
 
 func main() {
 	addr := flag.String("grpc", ":9101", "gRPC dinleme adresi")
+	adminAddr := flag.String("admin", ":9102", "yönetim (metrik/sağlık) adresi")
 	flag.Parse()
 
 	// Anahtar zinciri: Vault varsa oradan. Player TOKEN BASAN taraf
@@ -49,11 +52,30 @@ func main() {
 	}
 	instance = shortInstance(instance)
 
+	// YÖNETİM SUNUCUSU: /metrics ve /healthz.
+	//
+	// Player yalnız gRPC konuşuyordu; Prometheus ise HTTP çeker. Ayrı
+	// bir port açmak, gRPC portunu çift protokole zorlamaktan basit ve
+	// mesh politikası tarafında da temiz: yönetim portu yalnız
+	// Prometheus kimliğine açılırken 9101 yalnız hub'a açık kalıyor.
+	adminMux := http.NewServeMux()
+	adminMux.Handle("GET /metrics", metrics.Handler())
+	adminMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("ok"))
+	})
+	adminSrv := &http.Server{Addr: *adminAddr, Handler: adminMux}
+	go func() {
+		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("player: admin: %v", err)
+		}
+	}()
+
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatalf("player: listen: %v", err)
 	}
-	gs := grpc.NewServer()
+	// Interceptor: RED metrikleri tek yerde, bütün metotlar için.
+	gs := grpc.NewServer(grpc.UnaryInterceptor(metrics.UnaryServerInterceptor()))
 	pb.RegisterPlayerServiceServer(gs, player.NewKeyring(keyring, instance))
 	go func() {
 		if err := gs.Serve(lis); err != nil {
@@ -70,6 +92,7 @@ func main() {
 	<-sig
 	log.Println("kapanıyor...")
 	gs.GracefulStop() // akıştaki çağrıları bitir, yenisini alma
+	adminSrv.Close()
 }
 
 // shortInstance, Pod adını kimliğe gömülecek kadar kısaltır.

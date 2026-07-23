@@ -335,6 +335,27 @@ atlamanın istek oranı, gecikme histogramı ve mTLS durumu, kod hiç
 enstrümante edilmese bile gelir — "mesh'in bedeli" tartışmasının diğer
 kefesi.
 
+### RED: her gRPC atlaması İKİ TARAFTAN ölçülüyor
+
+Enstrümantasyon interceptor ile yapıldı — handler'lara elle sayaç
+koymak unutulan metot, tutarsız ad ve kopyala-yapıştır hatası üretir.
+Kesişen ilgiyi tek yerde çözmek, Faz 6'da şifrelemeyi sidecar'a
+taşımakla aynı refleks.
+
+Sunucu tarafı "ben ne kadar sürede cevapladım" der; istemci tarafı
+"ben ne kadar bekledim". Kümede ölçülen p95:
+
+```
+gRPC istemci (hub → player)     7750 µs
+gRPC sunucu  (player içinde)     475 µs
+giriş uçtan uca (HTTP)          7225 µs
+```
+
+**Aradaki ~7.3 ms ağ + iki mesh proxy'sidir.** Yalnız sunucu tarafını
+ölçen bir sistem 475 µs görüp "her şey yolunda" derdi; kullanıcının
+beklediği süre onun 16 katı. Mesh'in gecikme bedeli de ilk kez burada
+somut bir sayı: bu yol iki proxy hop'u geçiyor.
+
 ### Kümede ölçülen ilk sayılar
 
 ```
@@ -347,6 +368,30 @@ Dünya tick'i bütçesinin **binde birini** kullanıyor — 20Hz döngünün
 50ms'lik penceresinde 47 mikrosaniye. Faz 0'dan beri yapılan
 mikro-optimizasyonların kümede ne kadar geniş bir marj bıraktığının
 ilk somut ölçümü.
+
+### Doygunluk sinyali: dead letters
+
+`shardlands_dead_letters_total` bir HATA değil **doygunluk** sayacıdır.
+Faz 0'da mailbox'ları `DropNewest` yaptık: yavaş bir tüketici dünyayı
+yavaşlatmasın diye mesaj düşürmeyi bilerek seçtik. Sayaç sıfırdan
+büyükse sistem tasarlandığı gibi çalışıyor ama **baskı altında**
+demektir — oyuncular kare atlamaya başlamadan görülmesi gereken şey bu.
+
+Bağlantı `pkg/actor`'ın var olan `WithDeadLetterHandler` kancasıyla
+yapıldı: **çekirdek paket metrics'e bağımlı olmadı.** Faz 0'ın
+"kütüphanesiz çekirdek" kuralı korunuyor — çekirdek kanca sunar,
+montaj katmanı bağlar.
+
+### Sayaç sıfırlanması (ölçerken düşülen tuzak)
+
+Hub Pod'unu yeniden başlattıktan sonra gönderilen istekler player
+tarafında görünüyordu ama hub tarafında sayaç **0**'dı. Sebep: istekler
+Endpoints henüz güncellenmeden ölmekte olan sürece gitmişti ve o süreç
+sayaçlarıyla birlikte öldü.
+
+Bu, Prometheus'un neden ham sayaç değerine değil `rate()`/`increase()`
+fonksiyonlarına dayandığının canlı örneği: onlar sayaç sıfırlanmasını
+tanır ve doğru hesaplar. **Alarm asla ham sayaç değerine kurulmaz.**
 
 ### Aynı portta iki yetki seviyesi — ve iki tuzak
 

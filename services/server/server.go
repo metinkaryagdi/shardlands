@@ -23,6 +23,7 @@ import (
 	"shardlands/pkg/bus"
 	"shardlands/pkg/dlock"
 	"shardlands/pkg/es"
+	"shardlands/pkg/metrics"
 	"shardlands/services/chat"
 	"shardlands/services/gateway"
 	"shardlands/services/handoff"
@@ -126,7 +127,13 @@ func Start(cfg Config) (*Server, error) {
 		}
 	}
 	// Gateway'in servis istemcileri.
-	playerConn, err := grpc.NewClient(playerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// İstemci tarafı interceptor: "ben ne kadar bekledim" sorusunu
+	// cevaplar. Sunucu tarafındaki ölçümle farkı AĞ + KUYRUK + mesh
+	// proxy'sidir; yalnız sunucuyu ölçen bir sistem ağdan gelen
+	// gecikmeyi hiç göremez ve "bizde her şey yolunda" der.
+	playerConn, err := grpc.NewClient(playerAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(metrics.UnaryClientInterceptor()))
 	if err != nil {
 		s.Stop()
 		return nil, err
@@ -201,7 +208,14 @@ func Start(cfg Config) (*Server, error) {
 
 	// Dünya: bölgelere ayrılmış, consistent hashing ile shard'lara atanmış
 	// bölge aktörleri + dış tick zamanlayıcısı (tüm bölgelere).
-	s.system = actor.NewSystem("shardlands")
+	// Dead letter kancası: pkg/actor'ı metrics'e BAĞIMLI YAPMADAN
+	// doygunluk sinyalini dışarı taşır. Faz 0'ın "çekirdek paketler
+	// kütüphanesiz" kuralı korunuyor — çekirdek kanca sunar, montaj
+	// katmanı onu bağlar. Aynı desen es ve bus için de kullanılabilir.
+	s.system = actor.NewSystem("shardlands",
+		actor.WithDeadLetterHandler(func(*actor.Ref, any) {
+			metrics.DeadLetters.Inc()
+		}))
 	router, err := world.NewHub(s.system, events, cfg.Shards)
 	if err != nil {
 		s.Stop()
@@ -288,7 +302,8 @@ func (s *Server) serveGRPC(addr string, register func(*grpc.Server)) (string, er
 	if err != nil {
 		return "", err
 	}
-	gs := grpc.NewServer()
+	// Tüm iç gRPC sunucuları aynı RED ölçümünü paylaşır.
+	gs := grpc.NewServer(grpc.UnaryInterceptor(metrics.UnaryServerInterceptor()))
 	register(gs)
 	s.grpcSrvs = append(s.grpcSrvs, gs)
 	go gs.Serve(lis)
