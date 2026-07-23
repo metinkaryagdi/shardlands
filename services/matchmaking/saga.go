@@ -11,6 +11,7 @@ import (
 
 	"shardlands/pkg/actor"
 	"shardlands/pkg/es"
+	"shardlands/pkg/metrics"
 	"shardlands/services/arena"
 )
 
@@ -287,6 +288,7 @@ func (m *Matcher) runSaga(mt match) {
 
 	m.appendPhase(mt.id, EventPlayersAssigned)
 	m.matches.Add(1)
+	metrics.MatchTotal.WithLabelValues("ok").Inc()
 }
 
 // onMatchEnd, maç bitince arenayı temizler (oyuncuların hub'a dönüşü
@@ -315,6 +317,9 @@ func (m *Matcher) cancel(mt match, reason string, _ error) {
 
 	data, _ := json.Marshal(MatchCancelled{MatchID: mt.id, Reason: reason})
 	m.append(mt.id, EventMatchCancelled, data)
+	// Telafi yolları saga'nın en az koşan ama en kritik parçası:
+	// hiç sayılmazlarsa "çalışıyor mu" sorusu cevapsız kalır.
+	metrics.MatchTotal.WithLabelValues("cancelled").Inc()
 	log.Printf("matchmaking: match %s cancelled: %s", mt.id, reason)
 }
 

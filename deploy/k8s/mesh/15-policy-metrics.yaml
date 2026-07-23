@@ -1,0 +1,180 @@
+# METRİK PORTLARI — zero trust altında gözlemlenebilirlik.
+#
+# Faz 6'da namespace'e `default-inbound-policy: deny` koyduk ve
+# deploy/README.md'ye şu notu düşmüştük:
+#
+#   "default-inbound-policy: deny operator'ün 8081 metrik portunu da
+#    kapatır ... Prometheus scrape'i için Faz 7'de açık politika
+#    gerekecek."
+#
+# Bu dosya o notun karşılığı. Fark şurada: metrikleri "herkese açık"
+# yapmıyoruz, PROMETHEUS KİMLİĞİNE açıyoruz.
+#
+# Metrikler zararsız sanılır ama değildir: istek oranları, hata
+# oranları, kuyruk derinlikleri ve sürüm bilgileri bir saldırgan için
+# keşif (reconnaissance) malzemesidir — sistemin ne zaman baskı altında
+# olduğunu ve neyin nerede çalıştığını söyler. Kimlik temelli erişim
+# burada da geçerli.
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  name: prometheus-identity
+  namespace: shardlands
+spec:
+  identities:
+    - "prometheus.shardlands.serviceaccount.identity.linkerd.cluster.local"
+---
+# Hub'ın /metrics yolu 8080'de, yani OYUNCULARIN GİRDİĞİ PORTTA.
+#
+# Bu yüzden ayrı bir Server yazamayız (aynı port zaten `hub-http`
+# tarafından kapsanıyor); yol bazlı yetkilendirme gerekir. Linkerd'de
+# bunun aracı HTTPRoute + ona bağlı AuthorizationPolicy'dir.
+#
+# ⚠ TUZAK (yaşandı): bir Server'a HTTPRoute BAĞLANDIĞI ANDA o Server
+# "portun tamamını yetkilendir" modundan "ROTA BAZLI" moda geçer.
+# Yalnız /metrics rotasını yazmak, geri kalan her yolu (/readyz,
+# /api/*, /ws) rotasız bırakır ve proxy şunu döner:
+#
+#   error=no route found for request
+#
+# Belirti sinsi: hub Pod'u readiness probunu geçemedi ve
+# CrashLoopBackOff'a girdi. Uygulamada hiçbir şey değişmemişti;
+# değişen tek şey POLİTİKANIN ŞEKLİYDİ. Bu yüzden aşağıda önce
+# yakalayıcı (catch-all) rota tanımlı: 8080'in geri kalanı eskisi gibi
+# küme ağına açık kalıyor, yalnız /metrics daraltılıyor.
+#
+# Eşleşme önceliği Gateway API kuralına göre: EXACT, PREFIX'i yener.
+apiVersion: policy.linkerd.io/v1beta3
+kind: HTTPRoute
+metadata:
+  name: hub-public
+  namespace: shardlands
+spec:
+  parentRefs:
+    - group: policy.linkerd.io
+      kind: Server
+      name: hub-http
+      namespace: shardlands
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: hub-public-network
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: HTTPRoute
+    name: hub-public
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: NetworkAuthentication
+      name: cluster-networks
+---
+apiVersion: policy.linkerd.io/v1beta3
+kind: HTTPRoute
+metadata:
+  name: hub-metrics
+  namespace: shardlands
+spec:
+  parentRefs:
+    - group: policy.linkerd.io
+      kind: Server
+      name: hub-http
+      namespace: shardlands
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /metrics
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: hub-metrics-prometheus-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: HTTPRoute
+    name: hub-metrics
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: prometheus-identity
+---
+# Operator'ün metrik portu (8081): controller-runtime'ın hazır
+# metrikleri — reconcile süresi, kuyruk derinliği, hata oranı.
+# Kendi kodumuzu enstrümante etmeden gelen bedava sinyal.
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: operator-metrics
+  namespace: shardlands
+spec:
+  podSelector:
+    matchLabels:
+      app: shardlands-operator
+  port: metrics
+  proxyProtocol: HTTP/1
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: operator-metrics-prometheus-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: operator-metrics
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: prometheus-identity
+---
+# linkerd-proxy'lerin kendi admin portu (4191).
+#
+# Buradan gelen metrikler UYGULAMADAN BAĞIMSIZDIR: her atlamanın istek
+# oranı, gecikme histogramı ve mTLS durumu. Uygulama hiç enstrümante
+# edilmeseydi bile altın sinyaller elde olurdu — sidecar'ın en somut
+# kazançlarından biri ve "mesh'in bedeli" tartışmasının diğer kefesi.
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: proxy-admin
+  namespace: shardlands
+spec:
+  podSelector:
+    # DİKKAT: `linkerd.io/control-plane-ns` etiketi VERİ DÜZLEMİ
+    # Pod'larında da var (kontrol düzlemine ait olmayı değil, hangi
+    # kurulumun parçası olduğunu gösteriyor). İlk denemede bu etiketin
+    # yokluğuyla seçim yapmaya çalıştım; seçici hiçbir Pod'u tutmadı ve
+    # bütün proxy hedefleri sessizce `up=0` oldu.
+    #
+    # Doğru işaret: enjeksiyonda eklenen `linkerd.io/workload-ns`.
+    matchExpressions:
+      - key: linkerd.io/workload-ns
+        operator: Exists
+  port: linkerd-admin
+  proxyProtocol: HTTP/1
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: proxy-admin-prometheus-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: proxy-admin
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: prometheus-identity

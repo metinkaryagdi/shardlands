@@ -21,22 +21,23 @@ spec:
       app: shardlands-server
   port: http
   proxyProtocol: HTTP/1 # WebSocket yükseltmesi HTTP/1 üstünden
----
-apiVersion: policy.linkerd.io/v1alpha1
-kind: AuthorizationPolicy
-metadata:
-  name: hub-http-public
-  namespace: shardlands
-spec:
-  targetRef:
-    group: policy.linkerd.io
-    kind: Server
-    name: hub-http
-  requiredAuthenticationRefs:
-    # Küme ağından gelen her şey: NodePort trafiği kube-proxy üstünden
-    # düğüm ağıyla gelir, kubelet probları da öyle. Üretimde bunun yerine
-    # yalnız ingress denetleyicisinin KİMLİĞİ yazılır ve dış dünya
-    # ingress'te sonlanır — o zaman bu kaynak MeshTLSAuthentication olur.
-    - group: policy.linkerd.io
-      kind: NetworkAuthentication
-      name: cluster-networks
+#
+# BU SERVER İÇİN SERVER DÜZEYİNDE AuthorizationPolicy YOK — ve bu
+# Faz 7'de deneyle öğrenilmiş bir karar.
+#
+# Başlangıçta burada `hub-http-public` adında, Server'ı hedefleyen bir
+# politika vardı (küme ağına izin). Faz 7'de /metrics yolunu yalnız
+# Prometheus kimliğine açmak isteyince şu ortaya çıktı: SERVER
+# DÜZEYİNDEKİ İZİN, ROTA DÜZEYİNDEKİ KISITI GEÇERSİZ KILAR. İkisi
+# birleşim (union) olarak değerlendiriliyor; portun tamamına "serbest"
+# diyen bir kural varken tek bir rotayı daraltmak hiçbir şey yapmıyor.
+#
+# Belirti yine sinsiydi: manifest doğru görünüyordu, `kubectl get
+# authorizationpolicy` her ikisini de listeliyordu, ama dışarıdan
+# /metrics çağrısı 200 dönüyordu.
+#
+# Kural: bir portta rota bazlı yetkilendirmeye geçtiysen TÜM
+# yetkilendirmeyi rota düzeyine taşı. Yetkilendirme kuralları
+# 15-policy-metrics.yaml'da:
+#   /metrics  -> yalnız Prometheus kimliği
+#   /  (diğer) -> küme ağı (oyuncular, kubelet probları)

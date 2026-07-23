@@ -31,6 +31,7 @@ import (
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/pkg/actor"
 	"shardlands/pkg/auth"
+	"shardlands/pkg/metrics"
 	"shardlands/pkg/ratelimit"
 	"shardlands/pkg/resilience"
 	"shardlands/services/arena"
@@ -110,6 +111,12 @@ func New(cfg Config) *Gateway {
 	mux.HandleFunc("GET /ws", g.handleWS)
 	mux.HandleFunc("GET /healthz", g.handleHealthz)
 	mux.HandleFunc("GET /readyz", g.handleReadyz)
+	// /metrics AYNI PORTTA. Ayrı port daha temiz olurdu (metrikleri
+	// dış dünyaya hiç açmamak), ama o zaman mesh politikası da ikinci
+	// bir Server kaynağı isterdi. Kararı basit tuttuk ve erişimi
+	// politika katmanında sınırladık: yalnız Prometheus kimliği bu
+	// yolu çağırabilir (deploy/k8s/mesh/15-policy-metrics.yaml).
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.Handle("/", noCache(http.FileServer(http.Dir(cfg.ClientDir))))
 	g.mux = mux
 	g.ready.Store(true)
@@ -169,7 +176,18 @@ func (g *Gateway) handleChatRecent(w http.ResponseWriter, r *http.Request) {
 // ---- kimlik ----
 
 func (g *Gateway) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Süre HER YOLDA ölçülür — hata yollarının hızlı olması bir
+	// erdemdir ve onları ölçüm dışı bırakmak gecikme dağılımını
+	// olduğundan iyi gösterir.
+	basla := time.Now()
+	sonuc := "error"
+	defer func() {
+		metrics.LoginDuration.Observe(time.Since(basla).Seconds())
+		metrics.LoginTotal.WithLabelValues(sonuc).Inc()
+	}()
+
 	if !g.loginLimiter.Allow(clientIP(r)) {
+		sonuc = "rate_limited"
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
@@ -178,6 +196,7 @@ func (g *Gateway) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sonuc = "client_error"
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -200,10 +219,15 @@ func (g *Gateway) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case clientEr != nil:
+		sonuc = "client_error"
 		http.Error(w, status.Convert(clientEr).Message(), http.StatusBadRequest)
 		return
 	case errors.Is(err, resilience.ErrOpen), errors.Is(err, resilience.ErrFull):
 		// Yük atma / hızlı başarısızlık: istemciye "sonra dene" de.
+		// "shed" ayrı sayılır: bu bir ARIZA değil, korumanın devrede
+		// olduğunun işaretidir. Aynı kovaya koymak alarm eşiklerini
+		// yanıltırdı.
+		sonuc = "shed"
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "service busy, retry", http.StatusServiceUnavailable)
 		return
@@ -212,6 +236,7 @@ func (g *Gateway) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	sonuc = "ok"
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"playerId": resp.PlayerId,
@@ -371,9 +396,11 @@ func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Stopped process tamamen durunca bir kez ateşlenir, aktör
 	// instance'ının restart'ından etkilenmez).
 	g.online.Add(1)
+	metrics.Sessions.Inc()
 	go func() {
 		<-ref.Stopped()
 		g.online.Add(-1)
+		metrics.Sessions.Dec()
 		g.sessMu.Lock()
 		delete(g.sessions, claims.Sub)
 		g.sessMu.Unlock()
@@ -404,6 +431,7 @@ func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
 				m.Type == "fire" || m.Type == "queue":
 				if !limiter.Allow() {
 					g.shed.Add(1)
+					metrics.CommandsShed.Inc()
 					continue
 				}
 				ref.Send(m)

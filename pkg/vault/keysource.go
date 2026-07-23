@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"shardlands/pkg/auth"
+	"shardlands/pkg/metrics"
 )
 
 // KeySource, Vault'taki bir KV sırrını auth.Keyring'e bağlar ve
@@ -82,7 +83,16 @@ func (s *KeySource) Start(ctx context.Context) func() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := s.Load(ctx); err != nil && ctx.Err() == nil {
+				err := s.Load(ctx)
+				switch {
+				case err == nil:
+					metrics.KeyRefreshTotal.WithLabelValues("ok").Inc()
+				case ctx.Err() == nil:
+					// "Hata ölümcül değil" kararının bedeli SESSİZLİKTİR:
+					// Vault günlerce erişilemez olsa da servis çalışmaya
+					// devam eder ve kimse fark etmez. Sayaç bunu görünür
+					// kılar; alarm eşiği buraya bağlanır.
+					metrics.KeyRefreshTotal.WithLabelValues("error").Inc()
 					log.Printf("vault: anahtar tazeleme başarısız (eskisiyle devam): %v", err)
 				}
 			}

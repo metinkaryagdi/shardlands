@@ -115,6 +115,13 @@ spec:
     metadata:
       labels:
         app: shardlands-server
+      annotations:
+        # Prometheus'a "beni çek" demenin tek yolu bu üç annotation.
+        # Yeni bir servisi izlemeye almak, Prometheus yapılandırmasına
+        # dokunmayı GEREKTİRMEZ — keşif Pod etiketlerinden yürür.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: shardlands-server
       # Oyuncuların bağlantısı uzun ömürlü (WS): kapanışta hemen

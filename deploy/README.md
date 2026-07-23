@@ -304,6 +304,88 @@ davranıştır. Araç artık 429'u ayrı sayıyor ve varsayılan aralık
 sınırlayıcının doldurma hızına (1/sn) eşit. **Ölçüm aracının ne
 ölçtüğünü bilmesi gerekir.**
 
+## Gözlemlenebilirlik (Faz 7, devam ediyor)
+
+```bash
+kubectl apply -f deploy/k8s/obs/
+kubectl apply -f deploy/k8s/mesh/15-policy-metrics.yaml
+kubectl -n shardlands port-forward svc/prometheus 9090:9090
+```
+
+Prometheus **çekme** modeliyle çalışır: hedeflere gider, hedefler ona
+göndermez. Kazancı, "hedef ayakta mı" sorusunun bedava gelmesi
+(`up` metriği); bedeli, Prometheus'un hedeflere **ulaşabilmesi**
+gerekmesi — ve bizim namespace'imizde varsayılan politika `deny`.
+
+### Zero trust altında metrik toplama
+
+Metrikleri herkese açmıyoruz, **Prometheus kimliğine** açıyoruz.
+Metrikler zararsız sanılır ama istek/hata oranları ve kuyruk
+derinlikleri bir saldırgan için keşif malzemesidir.
+
+| Hedef | Port | Kim çekebilir |
+| --- | --- | --- |
+| hub `/metrics` | 8080 (oyuncu portu!) | yalnız Prometheus kimliği |
+| hub diğer yollar | 8080 | küme ağı (oyuncular, kubelet) |
+| operator | 8081 | yalnız Prometheus kimliği |
+| linkerd-proxy | 4191 | yalnız Prometheus kimliği |
+
+Son satır önemli: proxy metrikleri **uygulamadan bağımsızdır**. Her
+atlamanın istek oranı, gecikme histogramı ve mTLS durumu, kod hiç
+enstrümante edilmese bile gelir — "mesh'in bedeli" tartışmasının diğer
+kefesi.
+
+### Kümede ölçülen ilk sayılar
+
+```
+shardlands_login_total{result="ok"}                     3
+p95 shardlands_world_tick_duration_seconds       47.5 µs   (bütçe: 50 ms)
+up (10 hedeften 8'i)                                    1
+```
+
+Dünya tick'i bütçesinin **binde birini** kullanıyor — 20Hz döngünün
+50ms'lik penceresinde 47 mikrosaniye. Faz 0'dan beri yapılan
+mikro-optimizasyonların kümede ne kadar geniş bir marj bıraktığının
+ilk somut ölçümü.
+
+### Aynı portta iki yetki seviyesi — ve iki tuzak
+
+`/metrics` oyuncuların girdiği 8080'de. Ayrı Server yazılamaz; yol
+bazlı yetkilendirme gerekir (HTTPRoute + AuthorizationPolicy). İki kez
+takıldık:
+
+1. **HTTPRoute eklemek Server'ın modunu değiştiriyor.** Bir Server'a
+   rota bağlandığı anda "portu yetkilendir"den "rota bazlı"ya geçiyor;
+   yalnız `/metrics` rotasını yazınca geri kalan her yol
+   `no route found for request` ile düştü ve **hub CrashLoopBackOff'a
+   girdi**. Uygulamada hiçbir şey değişmemişti — değişen, politikanın
+   şekliydi. Çözüm: yakalayıcı (`/` prefix) rota da yazmak.
+2. **Server düzeyindeki izin, rota düzeyindeki kısıtı geçersiz
+   kılıyor.** Eski `hub-http-public` politikası dururken `/metrics`
+   dışarıdan hâlâ 200 dönüyordu. Kural: bir portta rota bazlı
+   yetkilendirmeye geçtiysen **tüm** yetkilendirmeyi rota düzeyine taşı.
+
+Doğrulama:
+
+```
+/metrics  (kimliksiz)  -> 403
+/api/stats             -> 200
+/readyz                -> 200
+```
+
+### Vault dev modu gerçekten ısırdı
+
+Bu adım sırasında Vault Pod'u yeniden başladı ve **bellekteki tüm
+yapılandırma gitti** (auth yöntemi, politika, rol, imzalama anahtarı).
+Hub ve player `403 Forbidden` ile CrashLoopBackOff'a girdi;
+`vault-configure` Job'ını yeniden koşturmak gerekti.
+
+docs/secrets.md §6'da "depolama bellekte, Pod ölürse sırlar gider" diye
+yazılmıştı — belgelenmiş bir sınır, yaşanınca somutlaştı. Ayrıca şu
+tasarım ayrımını görünür kıldı: **açılışta Vault sert bağımlılık**
+(sır okunamazsa süreç başlamaz), **çalışırken yumuşak bağımlılık**
+(tazeleme başarısız olsa da servis sürer, chaos deneyi 3).
+
 ## Chaos engineering
 
 Kavramsal anlatım: [docs/chaos.md](../docs/chaos.md). Deneyler

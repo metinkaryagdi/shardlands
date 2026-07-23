@@ -6,9 +6,11 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"shardlands/pkg/actor"
 	"shardlands/pkg/es"
+	"shardlands/pkg/metrics"
 	"shardlands/services/inventory"
 )
 
@@ -81,7 +83,12 @@ func (r *region) Receive(ctx *actor.Context) {
 	case Gather:
 		r.handleGather(m)
 	case Tick:
+		// Tick süresi hub'ın sağlığının EN DOĞRUDAN göstergesi: 20Hz'de
+		// bütçe 50ms. Bütçeye yaklaşan bir tick, oyuncular donuklaşmayı
+		// hissetmeden önce panoda görünür.
+		basla := time.Now()
 		r.tickStep(ctx)
+		metrics.WorldTickDuration.Observe(time.Since(basla).Seconds())
 	}
 }
 
