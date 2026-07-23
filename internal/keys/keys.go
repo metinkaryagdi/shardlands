@@ -16,7 +16,7 @@ package keys
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -34,9 +34,9 @@ func Load(ctx context.Context) (*auth.Keyring, func(), error) {
 		secret := os.Getenv("SHARDLANDS_SECRET")
 		if secret == "" {
 			secret = devSecret
-			log.Println("uyarı: VAULT_ADDR ve SHARDLANDS_SECRET yok, GELİŞTİRME SIRRI kullanılıyor")
+			slog.Warn("VAULT_ADDR ve SHARDLANDS_SECRET yok, GELİŞTİRME SIRRI kullanılıyor")
 		} else {
-			log.Println("anahtar kaynağı: SHARDLANDS_SECRET (ortam değişkeni)")
+			slog.Info("anahtar kaynağı", "source", "env")
 		}
 		return auth.NewKeyring([]byte(secret)), func() {}, nil
 	}
@@ -61,7 +61,7 @@ func Load(ctx context.Context) (*auth.Keyring, func(), error) {
 	if err := src.Load(ctx); err != nil {
 		return nil, nil, err
 	}
-	log.Printf("anahtar kaynağı: Vault (%s, %s/%s)", addr, src.Mount, src.Path)
+	slog.Info("anahtar kaynağı", "source", "vault", "addr", addr, "path", src.Mount+"/"+src.Path)
 	return src.Keyring, src.Start(ctx), nil
 }
 
@@ -77,7 +77,7 @@ func envDuration(k string, def time.Duration) time.Duration {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
-		log.Printf("uyarı: %s ayrıştırılamadı (%q), varsayılan %s", k, v, def)
+		slog.Warn("süre ayrıştırılamadı", "key", k, "value", v, "default", def.String())
 	}
 	return def
 }

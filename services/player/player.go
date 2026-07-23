@@ -8,6 +8,7 @@ package player
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/pkg/auth"
+	"shardlands/pkg/logging"
 )
 
 const maxNameLen = 24
@@ -32,6 +34,9 @@ type Service struct {
 	// instance, bu kopyayı diğerlerinden ayıran ön ek. Boşsa tek kopya
 	// varsayılır ve kimlikler eskisi gibi "p-1" biçiminde üretilir.
 	instance string
+	// log, yapılandırılmış logger. Rotasyon/imzalama hatalarını trace
+	// bağlamıyla loglamak için (gateway'in başlattığı trace_id taşınır).
+	log *slog.Logger
 
 	mu      sync.Mutex
 	players map[string]*pb.Player
@@ -49,8 +54,18 @@ func NewKeyring(keys *auth.Keyring, instance string) *Service {
 		keys:     keys,
 		tokenTTL: 24 * time.Hour,
 		instance: instance,
+		log:      slog.Default(),
 		players:  map[string]*pb.Player{},
 	}
+}
+
+// WithLogger, servisin logger'ını değiştirir (montaj katmanı JSON'lu
+// servis logger'ını geçirir). Zincirleme çağrı için *Service döner.
+func (s *Service) WithLogger(l *slog.Logger) *Service {
+	if l != nil {
+		s.log = l
+	}
+	return s
 }
 
 // NewInstance, YATAY ÖLÇEKLENEBİLİR servis kurar.
@@ -70,7 +85,7 @@ func NewInstance(secret []byte, instance string) *Service {
 	return NewKeyring(auth.NewKeyring(secret), instance)
 }
 
-func (s *Service) CreatePlayer(_ context.Context, req *pb.CreatePlayerRequest) (*pb.CreatePlayerResponse, error) {
+func (s *Service) CreatePlayer(ctx context.Context, req *pb.CreatePlayerRequest) (*pb.CreatePlayerResponse, error) {
 	name := strings.TrimSpace(req.GetName())
 	if name == "" || len([]rune(name)) > maxNameLen {
 		return nil, status.Errorf(codes.InvalidArgument, "name must be 1-%d characters", maxNameLen)
@@ -95,6 +110,13 @@ func (s *Service) CreatePlayer(_ context.Context, req *pb.CreatePlayerRequest) (
 		Exp:  time.Now().Add(s.tokenTTL).Unix(),
 	})
 	if err != nil {
+		// KORELASYONUN GÖRÜNDÜĞÜ YER. Bu hata rotasyon sırasında Vault
+		// erişilemezse ve zincir boşalırsa gerçekleşir. Log satırı,
+		// gateway'in başlattığı trace'in AYNI trace_id'siyle çıkar
+		// (interceptor bağlamı taşıdı) — panoda "login p99 fırladı"
+		// grafiğinden bu satıra tek zincirle inilir. docs/observability.md.
+		logging.FromContext(ctx, s.log).Error("token imzalanamadı",
+			"player", id, "err", err)
 		return nil, status.Errorf(codes.Internal, "sign token: %v", err)
 	}
 	return &pb.CreatePlayerResponse{PlayerId: id, Token: token}, nil

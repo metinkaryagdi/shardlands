@@ -23,6 +23,7 @@ import (
 	"shardlands/pkg/bus"
 	"shardlands/pkg/dlock"
 	"shardlands/pkg/es"
+	"shardlands/pkg/logging"
 	"shardlands/pkg/metrics"
 	"shardlands/pkg/trace"
 	"shardlands/services/chat"
@@ -121,6 +122,7 @@ func Start(cfg Config) (*Server, error) {
 	// aktarıcıya bağlanırdı.
 	tracer := trace.NewRecorder("gateway", 512)
 	s.tracer = tracer
+	logger := logging.New("gateway")
 
 	// İç servisler: gerçek gRPC sunucuları (in-process ama ağ üstünde).
 	// PlayerTarget verilmişse servis ayrı bir Pod'da koşuyordur.
@@ -295,6 +297,7 @@ func Start(cfg Config) (*Server, error) {
 		Stats:     s.stats,
 		Matcher:   s.matcher,
 		Tracer:    tracer,
+		Log:       logger,
 	})
 	// Kurulum döngüsünü kır: koordinatör gateway'i SessionPort olarak
 	// kullanır, gateway koordinatörü handoff için; matcher da gateway'i

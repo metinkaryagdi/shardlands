@@ -3,7 +3,7 @@ package vault
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -93,7 +93,7 @@ func (s *KeySource) Start(ctx context.Context) func() {
 					// devam eder ve kimse fark etmez. Sayaç bunu görünür
 					// kılar; alarm eşiği buraya bağlanır.
 					metrics.KeyRefreshTotal.WithLabelValues("error").Inc()
-					log.Printf("vault: anahtar tazeleme başarısız (eskisiyle devam): %v", err)
+					slog.Warn("vault anahtar tazeleme başarısız (eskisiyle devam)", "err", err)
 				}
 			}
 		}

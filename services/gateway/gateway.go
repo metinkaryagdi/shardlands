@@ -13,10 +13,11 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -31,6 +32,7 @@ import (
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/pkg/actor"
 	"shardlands/pkg/auth"
+	"shardlands/pkg/logging"
 	"shardlands/pkg/metrics"
 	"shardlands/pkg/ratelimit"
 	"shardlands/pkg/resilience"
@@ -63,6 +65,9 @@ type Config struct {
 	// Tracer, istek-cevap yollarının izlenmesi (Faz 7). Nil olabilir:
 	// testler ve tek süreç geliştirme izleme olmadan da çalışır.
 	Tracer *trace.Recorder
+	// Log, yapılandırılmış logger. Nil ise slog.Default kullanılır;
+	// böylece testler ve tek süreç kurulum ek yapılandırma istemez.
+	Log *slog.Logger
 }
 
 type Gateway struct {
@@ -197,6 +202,17 @@ func (g *Gateway) handleReadyz(w http.ResponseWriter, r *http.Request) {
 // çalışmaya devam eder — yalnız YENİ trafik kesilir.
 func (g *Gateway) Drain() { g.ready.Store(false) }
 
+// log, isteğin bağlamındaki trace kimliğini otomatik ekleyen logger'ı
+// döner. Config.Log nil ise slog.Default'a düşer — testler ve tek
+// süreç kurulum ek yapılandırma istemesin diye.
+func (g *Gateway) log(ctx context.Context) *slog.Logger {
+	base := g.cfg.Log
+	if base == nil {
+		base = slog.Default()
+	}
+	return logging.FromContext(ctx, base)
+}
+
 // Handler, HTTP yönlendiricisi.
 func (g *Gateway) Handler() http.Handler { return g.mux }
 
@@ -284,11 +300,19 @@ func (g *Gateway) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "service busy, retry", http.StatusServiceUnavailable)
 		return
 	case err != nil:
-		log.Printf("gateway: create player: %v", err)
+		// Korelasyonlu log: bu satır, bu isteğin trace'ine trace_id
+		// üstünden bağlanır. Panoda p99'u bozan çağrının SEBEBİNE
+		// grafikten tek tıkla inilmesini sağlayan şey bu alandır.
+		g.log(r.Context()).Error("create player failed", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	sonuc = "ok"
+	// Başarı da loglanıyor: giriş düşük hacimli (kötüye kullanım hız
+	// sınırıyla kesiliyor) ve denetim değeri var — "şu oyuncu şu an
+	// girdi". trace_id otomatik: bu satır, isteğin trace'ine grafikten
+	// inilebilen tek nokta.
+	g.log(r.Context()).Info("login ok", "player", resp.PlayerId)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"playerId": resp.PlayerId,
@@ -348,7 +372,7 @@ func (g *Gateway) handleTrade(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := g.cfg.Trades.Execute(offer, trade.AutoAccept)
 	if err != nil {
-		log.Printf("gateway: trade execute: %v", err)
+		g.log(r.Context()).Error("trade execute failed", "trade", offer.ID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -747,9 +771,14 @@ func (g *Gateway) Assign(playerID string, h *matchmaking.Handle, team int) error
 }
 
 // Release, matchmaking.Assigner telafisi / maç sonu: oyuncuyu hub'a döndür.
+//
+// Bu yol bir HTTP isteğinden değil, saga geri çağrısından tetikleniyor;
+// dolayısıyla taşınacak bir trace bağlamı YOK. Korelasyonsuz ama
+// yapılandırılmış logluyoruz — playerID en azından sorgulanabilir bir
+// alan olarak kalıyor.
 func (g *Gateway) Release(playerID string) {
 	if err := g.cfg.Handoff.ToHub(playerID); err != nil {
-		log.Printf("gateway: release %s: %v", playerID, err)
+		g.log(context.Background()).Error("release to hub failed", "player", playerID, "err", err)
 	}
 }
 

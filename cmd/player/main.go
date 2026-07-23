@@ -14,7 +14,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -25,7 +25,9 @@ import (
 	"google.golang.org/grpc"
 
 	pb "shardlands/gen/shardlands/v1"
+
 	"shardlands/internal/keys"
+	"shardlands/pkg/logging"
 	"shardlands/pkg/metrics"
 	"shardlands/pkg/trace"
 	"shardlands/services/player"
@@ -36,13 +38,21 @@ func main() {
 	adminAddr := flag.String("admin", ":9102", "yönetim (metrik/sağlık) adresi")
 	flag.Parse()
 
+	// Logger'ı EN BAŞTA kur ve global default yap: bundan sonraki her
+	// log satırı (keys.Load'ın "anahtar kaynağı" satırı dahil) JSON
+	// biçimde ve service alanıyla çıkar. Sıra önemli — SetDefault'tan
+	// önceki hiçbir log yapılandırılmış olmaz.
+	logger := logging.New("player")
+	slog.SetDefault(logger)
+
 	// Anahtar zinciri: Vault varsa oradan. Player TOKEN BASAN taraf
 	// olduğu için rotasyonda kritik olan bu süreçtir — yeni anahtar
 	// buraya ulaşmadan imzalama dönmez.
 	ctx, cancelKeys := context.WithCancel(context.Background())
 	keyring, stopKeys, err := keys.Load(ctx)
 	if err != nil {
-		log.Fatalf("player: anahtarlar yüklenemedi: %v", err)
+		slog.Error("anahtarlar yüklenemedi", "err", err)
+		os.Exit(1)
 	}
 	defer func() { stopKeys(); cancelKeys() }()
 
@@ -75,25 +85,26 @@ func main() {
 	adminSrv := &http.Server{Addr: *adminAddr, Handler: adminMux}
 	go func() {
 		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("player: admin: %v", err)
+			slog.Error("admin sunucusu", "err", err)
 		}
 	}()
 
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
-		log.Fatalf("player: listen: %v", err)
+		slog.Error("dinlenemedi", "addr", *addr, "err", err)
+		os.Exit(1)
 	}
 	// Interceptor: RED metrikleri tek yerde, bütün metotlar için.
 	gs := grpc.NewServer(grpc.ChainUnaryInterceptor(
 		metrics.UnaryServerInterceptor(),
 		tracer.UnaryServerInterceptor()))
-	pb.RegisterPlayerServiceServer(gs, player.NewKeyring(keyring, instance))
+	pb.RegisterPlayerServiceServer(gs, player.NewKeyring(keyring, instance).WithLogger(logger))
 	go func() {
 		if err := gs.Serve(lis); err != nil {
-			log.Printf("player: serve: %v", err)
+			slog.Error("gRPC serve", "err", err)
 		}
 	}()
-	log.Printf("player servisi %s üzerinde (kopya: %q)", lis.Addr(), instance)
+	slog.Info("player başladı", "addr", lis.Addr().String(), "instance", instance)
 
 	// SIGTERM de dinleniyor: Kubernetes kapanışı bununla ister,
 	// SIGINT'le değil. Yalnız Interrupt dinleyen bir süreç kümede
@@ -101,7 +112,7 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
-	log.Println("kapanıyor...")
+	slog.Info("kapanıyor")
 	gs.GracefulStop() // akıştaki çağrıları bitir, yenisini alma
 	adminSrv.Close()
 }

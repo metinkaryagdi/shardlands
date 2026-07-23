@@ -402,6 +402,47 @@ ağacı varsayar, WS oturumu uzun ömürlü akıştır; "oturum = bir trace"
 saatlerce açık kalırdı). O yolun sağlığı metriklerle izleniyor.
 **"Her şeyi izle" bir hedef değil, bir maliyet hatasıdır.**
 
+### Log korelasyonu: üç sinyali birbirine bağlamak
+
+Üç sinyal ayrı ayrı yarım işe yarar; birbirine bağlandıklarında hata
+ayıklama yolculuğu tamamlanır:
+
+```
+metrik → "login p99 fırladı"              (bir GRAFİK)
+trace  → "şu istek player'da 3sn durdu"   (bir İSTEK)
+log    → "o istekte token imzası hata verdi" (SEBEP)
+```
+
+İkinci oktan üçüncüye geçişi sağlayan tek şey **trace_id**'dir.
+`pkg/logging`, `slog` (harici kütüphane yok) üstünde bu alanı bağlamdan
+otomatik ekler. Kümede ölçülen — tek bir giriş:
+
+```
+yanıt başlığı:  traceparent: 00-cd7f4224313cdbf6aff15b5e1cfed469-...
+hub log satırı: {"level":"INFO","msg":"login ok","service":"gateway",
+                 "trace_id":"cd7f4224313cdbf6aff15b5e1cfed469",
+                 "span_id":"5b784efec579486f","player":"p-d8nxf-2"}
+```
+
+Aynı `trace_id`. İstemcinin gördüğü başlıktan, o isteğin log satırına
+tek sorguyla inilir. Loglar JSON çünkü kümede log'u insan değil makine
+okur; `service` alanı her satırda, tek akışta hangi servisin konuştuğu
+buradan ayrılır.
+
+**Sıra bir tuzaktı:** başlangıç logları başta hâlâ eski `log` paketinde
+çıkıyordu (timestamp önekli, JSON değil). Sebep `slog.SetDefault`
+çağrısının `keys.Load`'dan **sonra** gelmesi — `log.Printf` zaten
+`slog.Default`'a gitmez. Global logger en başta kurulmalı; ondan önceki
+hiçbir satır yapılandırılmış olmaz.
+
+**Dayanıklılık, korelasyon logunu nadir kılıyor:** "token imzalanamadı"
+satırını tetiklemeye çalıştım (Vault'ta anahtarı boşalttım) ama
+`KeySource` boş anahtarı reddedip **eski anahtarla devam etti** — login
+`200` dönmeye devam etti, yalnız yapılandırılmış bir `WARN` düştü:
+`"vault anahtar tazeleme başarısız (eskisiyle devam)"`. Chaos deney
+3'ün aynı davranışı, bu kez log tarafından görünür kılınmış. Sağlam
+tasarımın yan etkisi: hata korelasyon yolu pratikte az koşar — bu iyi.
+
 ### Doygunluk sinyali: dead letters
 
 `shardlands_dead_letters_total` bir HATA değil **doygunluk** sayacıdır.
