@@ -37,6 +37,12 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  # Lider seçimi: kilit bir Lease kaynağıdır. Rolling update sırasında
+  # eski ve yeni Pod birlikte yaşarken yalnız birinin reconcile etmesini
+  # sağlar (kendi pkg/dlock'umuzun etcd üstündeki karşılığı).
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -61,7 +67,17 @@ metadata:
   name: shardlands-operator
   namespace: shardlands
 spec:
-  replicas: 1 # leader election yok: tek replika (bkz. deploy/README.md)
+  # replicas=2 ama AYNI ANDA YALNIZ BİRİ ÇALIŞIR: lider seçimi ikincisini
+  # beklemeye alır. Bu "yatay ölçek" değil SICAK YEDEK — reconcile
+  # döngüsünü paralelleştirmek istemiyoruz, devralma süresini kısaltmak
+  # istiyoruz. Lider ölünce yedek kirayı ~15sn içinde alır; tek kopyada
+  # yeni Pod'un çizelgelenip başlaması çok daha uzun sürerdi.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: shardlands-operator
@@ -84,6 +100,7 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - "--namespace=shardlands"
+            - "--leader-elect"
           ports:
             - containerPort: 8081
               name: metrics

@@ -1,0 +1,44 @@
+# PodDisruptionBudget — GÖNÜLLÜ kesintilere karşı koruma.
+#
+# En sık yanlış anlaşılan Kubernetes kaynağı. PDB, Pod'un çökmesini,
+# OOM yemesini ya da düğümün patlamasını ENGELLEMEZ; bunlar gönülsüz
+# (involuntary) kesintilerdir ve PDB'nin haberi bile olmaz.
+#
+# PDB yalnız EVICTION API'sinden geçen işlemleri durdurur:
+# `kubectl drain`, küme otomatik ölçekleyicinin düğüm toplaması,
+# düğüm yükseltmeleri. Yani "bakım sırasında beni tek başıma bırakma"
+# sözleşmesidir.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: player
+  namespace: shardlands
+spec:
+  # İki kopyadan en az biri her zaman ayakta kalsın. Düğüm boşaltılırken
+  # ikisi birden gitmez; drain, ikincisini almadan önce birincinin
+  # yerine geçen Pod'un hazır olmasını bekler.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: shardlands-player
+---
+# ARENA POD'LARI — devam eden maçları koru.
+#
+# maxUnavailable: 0 = "hiçbir arena Pod'u gönüllü olarak tahliye
+# edilemez". Sert bir kural; düğüm boşaltmayı BLOKLAR. Burada kabul
+# edilebilir olmasının tek sebebi arenaların ömrünün sınırlı olması:
+# TTL 5 dakika, tipik maç 90 saniye. Drain en fazla o kadar bekler.
+#
+# Takas açıkça şu: bir maçı yarıda kesmektense düğüm bakımını birkaç
+# dakika geciktirmeyi seçiyoruz. Uzun ömürlü iş yükleri için aynı ayar
+# felakettir — drain hiç bitmez.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: arena
+  namespace: shardlands
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: shardlands-arena

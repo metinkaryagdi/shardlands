@@ -36,16 +36,27 @@ import (
 func main() {
 	watch := flag.Duration("watch", 45*time.Second, "kuyruktan sonra izleme süresi")
 	rogue := flag.String("rogue", "", "zero-trust testi: player servisini yetkisiz çağır")
+	hammer := flag.Duration("hammer", 0, "kesintisizlik testi: bu süre boyunca sürekli giriş yap")
+	// 1sn: gateway'in hız sınırlayıcısı IP başına saniyede 1 token
+	// dolduruyor (pkg/ratelimit, burst 10). Daha sık vurmak dağıtım
+	// kesintisini değil KENDİ YÜK ATMAMIZI ölçerdi — ilk denemede tam
+	// olarak bu oldu: 200ms aralıkla istekler 429'a çarptı ve araç
+	// "kesinti var" dedi. Ölçüm aracının ölçtüğü şeyi bilmesi gerekir.
+	every := flag.Duration("every", time.Second, "giriş denemeleri arası süre")
 	flag.Parse()
+
+	base := os.Getenv("BASE")
+	if base == "" {
+		base = "http://localhost:30080"
+	}
 
 	if *rogue != "" {
 		runRogue(*rogue)
 		return
 	}
-
-	base := os.Getenv("BASE")
-	if base == "" {
-		base = "http://localhost:30080"
+	if *hammer > 0 {
+		runHammer(base, *hammer, *every)
+		return
 	}
 
 	var arenaFrames atomic.Int64
@@ -94,6 +105,67 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("TAMAM")
+}
+
+// runHammer, KESİNTİSİZLİK DENEYİ. Verilen süre boyunca aralıksız
+// /api/login çağırır ve başarısızlıkları sayar.
+//
+// Neden giriş? Çünkü zincirin tamamını geçer: gateway → (mesh, mTLS) →
+// player Pod'u → token imzası. Yani hem hub'ın hem player'ın yeniden
+// dağıtımını görür.
+//
+// Kullanım: bunu koştururken başka bir kabukta
+//
+//	kubectl -n shardlands rollout restart deployment/player
+//
+// Beklenen: player için 0 hata (2 kopya, maxUnavailable=0, preStop).
+// Hub yeniden başlatılırsa hata BEKLENİR — tek kopya, kesintisiz
+// olamaz. Deneyin değeri ikisini ayırt edebilmesinde.
+func runHammer(base string, d, every time.Duration) {
+	var ok, fail, shed int
+	var firstErr string
+	deadline := time.Now().Add(d)
+	client := &http.Client{Timeout: 5 * time.Second}
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+
+	fmt.Printf("%s adresine %s boyunca her %s'de bir giriş...\n", base, d, every)
+	for time.Now().Before(deadline) {
+		<-tick.C
+		body, _ := json.Marshal(map[string]string{"name": "hammer"})
+		resp, err := client.Post(base+"/api/login", "application/json", bytes.NewReader(body))
+		switch {
+		case err != nil:
+			// Bağlantı kurulamadı: dağıtım boşluğunun gerçek belirtisi.
+			fail++
+			if firstErr == "" {
+				firstErr = err.Error()
+			}
+		case resp.StatusCode == http.StatusTooManyRequests:
+			// 429 ARIZA DEĞİL. Faz 4'te bilerek yazdığımız yük atma
+			// devrede demektir — sistem çalışıyor, bizi kısıyor.
+			// Ayrı sayılmazsa ölçüm "kesinti" diye yalan söyler.
+			shed++
+			resp.Body.Close()
+		case resp.StatusCode != http.StatusOK:
+			fail++
+			if firstErr == "" {
+				firstErr = resp.Status
+			}
+			resp.Body.Close()
+		default:
+			ok++
+			resp.Body.Close()
+		}
+	}
+
+	fmt.Printf("başarılı: %d  başarısız: %d  hız sınırı (429): %d\n", ok, fail, shed)
+	if fail > 0 {
+		fmt.Printf("ilk hata: %s\n", firstErr)
+		fmt.Println("KESİNTİ VAR")
+		os.Exit(1)
+	}
+	fmt.Println("KESİNTİSİZ")
 }
 
 // runRogue, ZERO TRUST DENEYİ. Küme içinde ama BAŞKA bir

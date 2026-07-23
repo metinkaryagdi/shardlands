@@ -8,10 +8,11 @@ Faz 5'te konan soyutlamaların (`Provisioner`, `bus.Bus`) yerine oturması.
 ```
 deploy/
   docker/       Dockerfile.server | .player | .arena | .operator | .smoke
-  k8s/base/     namespace, NATS, player, sunucu, operator (+RBAC)
+  k8s/base/     namespace, NATS, player, sunucu, operator (+RBAC, PDB)
   k8s/local/    yalnız yerel küme için NodePort
   k8s/mesh/     Linkerd zero-trust politikaları (Server/AuthorizationPolicy)
   mesh/         Linkerd kontrol düzlemi kurulumu
+  gitops/       ArgoCD kurulumu + app-of-apps (sync wave'li Application'lar)
   kind/         küme yapılandırması + up/down betikleri
 ```
 
@@ -231,6 +232,76 @@ de düzeltiyor.
   operator'ün 8081 metrik portunu da kapatır. Kubelet probları Linkerd
   tarafından otomatik yetkilendirilir (Pod spec'inde beyan edilen probe
   yolları), ama Prometheus scrape'i için Faz 7'de açık politika gerekecek.
+
+## GitOps (ArgoCD)
+
+Kavramsal anlatım: [docs/gitops.md](../docs/gitops.md).
+
+```bash
+./deploy/gitops/install.sh   # ArgoCD + kök Application
+kubectl -n argocd get applications
+```
+
+Kök Application ([root.yaml](gitops/root.yaml)) **kümeye insan elinin
+değdiği son yer**; geri kalan her şeyi o çeker. Sıra kuralları artık
+komut sırası değil beyan:
+
+| Dalga | Ne | Neden önce |
+| --- | --- | --- |
+| -2 | Arena CRD'si | Tip tanımlanmadan onu kullanan hiçbir şey açılamaz |
+| -1 | mesh politikaları | `deny` altında iş yükünü kuralsız açma |
+| 0 | iş yükleri | — |
+
+Fark önemli: `up.sh` doğru sırayı **bir kez** uygular, sync wave **her
+uzlaştırmada** uygular.
+
+`prune: true` + `selfHeal: true` birlikte açık; ikisi olmadan "Git tek
+gerçek kaynaktır" cümlesi doğru değildir. Kurulumun dürüst sınırları
+(sabit `:dev` etiketi, düz metin Secret'lar, ArgoCD'nin kendisinin
+GitOps'la yönetilmemesi) docs/gitops.md §6'da.
+
+## Kesintisiz dağıtım
+
+Kavramsal anlatım: [docs/zero-downtime.md](../docs/zero-downtime.md).
+
+| Bileşen | Kesintisiz mi? | Neden |
+| --- | --- | --- |
+| player | **Evet** | 2 kopya, `maxUnavailable: 0`, preStop, PDB |
+| operator | Evet (sıcak yedek) | 2 kopya + lider seçimi; devralma ~15sn |
+| hub | **Hayır** | Tek kopya + RWO PVC — yapısal olarak imkânsız |
+| arena | Yok sayılır | Maç bitince zaten ölür; PDB in-flight maçı korur |
+
+Hub'ın kesintisiz olamamasını gizlemiyoruz: bölge aktörleri ve Raft
+grupları tek süreçte yaşıyor, ikinci kopya ikinci bir dünya açardı.
+Elde kalan hafifletmeler zarif kapanış ve **istemcinin otomatik yeniden
+bağlanması** — bu adımda ikisi de eksikti, ikisi de eklendi.
+
+### Ölçüm
+
+```bash
+go run ./internal/smoke -hammer=70s
+# başka bir kabukta:
+kubectl -n shardlands rollout restart deployment/player
+```
+
+Kümede ölçülen (saniyede bir giriş, 70 saniye):
+
+| Deney | Başarılı | Başarısız | Sonuç |
+| --- | --- | --- | --- |
+| `rollout restart deployment/player` | 70 | **0** | KESİNTİSİZ |
+| `delete pod shardlands-0` (hub) | 50 | **4** | KESİNTİ VAR (~4sn) |
+
+İkinci satır bir eksiklik değil, **beklenen sonuç**: hub tek kopya, RWO
+PVC'ye bağlı, yeni Pod eskisi diski bırakmadan başlayamaz. Aracın değeri
+ikisini ayırt edebilmesinde — "kesintisiz dağıtım yaptık" demek yerine
+hangi bileşen için doğru olduğunu sayıyla söyleyebiliyoruz.
+
+Bir de ölçüm aracının kendi hatası kayda değer: ilk sürüm 200ms
+aralıkla vuruyordu ve **kendi hız sınırlayıcımıza** çarpıp 290 "hata"
+saydı (429). Yük atma arıza değil, Faz 4'te bilerek yazdığımız
+davranıştır. Araç artık 429'u ayrı sayıyor ve varsayılan aralık
+sınırlayıcının doldurma hızına (1/sn) eşit. **Ölçüm aracının ne
+ölçtüğünü bilmesi gerekir.**
 
 ## Sırlar
 

@@ -16,6 +16,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
+	"syscall"
 
 	"google.golang.org/grpc"
 
@@ -33,22 +35,42 @@ func main() {
 		log.Println("uyarı: SHARDLANDS_SECRET yok, geliştirme sırrı kullanılıyor")
 	}
 
+	// Kopya ön eki: Pod adı (aşağı yönlü API) — bir namespace içinde
+	// benzersizdir. Yoksa hostname'e düş; o da yoksa tek kopya say.
+	instance := os.Getenv("POD_NAME")
+	if instance == "" {
+		instance, _ = os.Hostname()
+	}
+	instance = shortInstance(instance)
+
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatalf("player: listen: %v", err)
 	}
 	gs := grpc.NewServer()
-	pb.RegisterPlayerServiceServer(gs, player.New(secret))
+	pb.RegisterPlayerServiceServer(gs, player.NewInstance(secret, instance))
 	go func() {
 		if err := gs.Serve(lis); err != nil {
 			log.Printf("player: serve: %v", err)
 		}
 	}()
-	log.Printf("player servisi %s üzerinde", lis.Addr())
+	log.Printf("player servisi %s üzerinde (kopya: %q)", lis.Addr(), instance)
 
+	// SIGTERM de dinleniyor: Kubernetes kapanışı bununla ister,
+	// SIGINT'le değil. Yalnız Interrupt dinleyen bir süreç kümede
+	// zarifçe kapanmaz, terminationGracePeriod dolunca SIGKILL yer.
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	log.Println("kapanıyor...")
-	gs.GracefulStop()
+	gs.GracefulStop() // akıştaki çağrıları bitir, yenisini alma
+}
+
+// shortInstance, Pod adını kimliğe gömülecek kadar kısaltır.
+// "player-6b6b9f7b67-kprj2" -> "kprj2"
+func shortInstance(s string) string {
+	if i := strings.LastIndex(s, "-"); i >= 0 && i+1 < len(s) {
+		return s[i+1:]
+	}
+	return s
 }

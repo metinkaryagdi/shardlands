@@ -106,6 +106,18 @@ spec:
       # Oyuncuların bağlantısı uzun ömürlü (WS): kapanışta hemen
       # kesmek yerine oturumların temizlenmesine süre tanı.
       terminationGracePeriodSeconds: 30
+      # HUB İÇİN PDB YOK — ve bu bilinçli.
+      #
+      # Tek kopyalı bir iş yükünde PDB'nin iki seçeneği var ve ikisi de
+      # işe yaramıyor: minAvailable=1 düğüm boşaltmayı SONSUZA KADAR
+      # bloklar (yerine geçecek ikinci kopya yok), maxUnavailable=1 ise
+      # hiçbir şeyi korumaz. PDB kopya sayısı olmayan yerde kullanılamaz.
+      #
+      # Hub'ın kesintisiz olmamasının sebebi bir eksiklik değil tasarım:
+      # bölge aktörleri ve Raft grupları tek süreçte yaşıyor (bkz.
+      # 20-server.yaml başı). Elimizdeki gerçek hafifletmeler:
+      # zarif kapanış (Drain + graceful shutdown) ve istemcinin
+      # otomatik yeniden bağlanması. Bkz. docs/zero-downtime.md §4.
       securityContext:
         runAsNonRoot: true
         # runAsUser SAYISAL olmalı: kubelet, isimli kullanıcının (`USER
@@ -134,6 +146,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+          lifecycle:
+            preStop:
+              # Endpoints yayılması SIGTERM'den yavaş kalır; 5sn'lik
+              # gecikme yeni WS bağlantılarının ölmekte olan Pod'a
+              # yönlendirilmesini engeller (bkz. 15-player.yaml).
+              sleep:
+                seconds: 5
           # readiness ≠ liveness: /readyz kapanışta 503'e döner (yeni
           # trafik kesilir), /healthz süreç ayakta olduğu sürece 200
           # kalır (bağımlılık arızasında Pod'u öldürmeyiz).

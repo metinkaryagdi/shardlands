@@ -8,9 +8,14 @@
 # hub kimliği yetkilidir" kuralının denetleyecek bir atlaması var.
 # Bkz. docs/service-mesh.md §5.
 #
-# NEDEN Deployment? Durumsuz sayılır: kayıtları bellekte tutuyor ama
-# kalıcı bir sözü yok. replicas=1, çünkü kayıt defteri replikalar
-# arasında paylaşılmıyor (event store'a taşınması ayrı bir iş).
+# NEDEN Deployment? Durumsuz: kayıt defterini bellekte tutuyor ama onu
+# kimse okumuyor (GetPlayer RPC'si çağrılmıyor), kalıcı bir sözü yok.
+#
+# replicas=2 — kümedeki TEK gerçekten kesintisiz bileşen. Bunu mümkün
+# kılmak için servisin gizli durumu düzeltilmek zorunda kaldı: kimlik
+# sayacı kopya başına artıyordu ve iki kopya aynı "p-1"i basardı.
+# Kimlikler artık Pod adından türeyen bir ön ek taşıyor
+# (services/player: NewInstance). Bkz. docs/zero-downtime.md §2.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -52,7 +57,16 @@ metadata:
   name: player
   namespace: shardlands
 spec:
-  replicas: 1
+  replicas: 2
+  # maxUnavailable: 0 — yeni Pod HAZIR OLMADAN eskisi düşmez. Kapasite
+  # asla azalmaz, en fazla geçici olarak artar (maxSurge). Kesintisiz
+  # dağıtımın manifest tarafındaki tek satırlık özeti budur; geri kalanı
+  # readiness probu ile preStop'un doğru kurulmasıdır.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: shardlands-player
@@ -62,6 +76,9 @@ spec:
         app: shardlands-player
     spec:
       serviceAccountName: shardlands-player
+      # 30sn: GracefulStop akıştaki gRPC çağrılarını bitirene kadar
+      # bekleyebilsin. Süre dolarsa kubelet SIGKILL yollar.
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -78,6 +95,31 @@ spec:
                 secretKeyRef:
                   name: shardlands-secret
                   key: SHARDLANDS_SECRET
+            # Aşağı yönlü API: Pod adı kimlik ön eki olur.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          lifecycle:
+            preStop:
+              # KESİNTİSİZ DAĞITIMIN EN ÇOK ATLANAN PARÇASI.
+              #
+              # Pod silinince iki şey PARALEL başlar:
+              #   1) kubelet SIGTERM yollar,
+              #   2) endpoints denetleyicisi Pod'u Endpoints'ten düşürür
+              #      ve kube-proxy / mesh proxy'leri tablolarını günceller.
+              # (1) neredeyse her zaman (2)'yi yener. Uygulama SIGTERM'i
+              # alıp hemen kapanırsa, hâlâ bu Pod'a yönlendiren istemciler
+              # "connection refused" alır — kapanış "zarif" olduğu halde
+              # istek kaybedilir.
+              #
+              # preStop, SIGTERM'i geciktirir: yayılma tamamlanır, sonra
+              # kapanış başlar. Uygulamada değişiklik gerektirmez.
+              #
+              # `sleep` eylemi (K8s 1.30+) distroless için şart: imajda
+              # kabuk yok, `exec: ["sh","-c","sleep 5"]` çalışmaz.
+              sleep:
+                seconds: 5
           # gRPC sunucusu HTTP probu sunmuyor; TCP probu "port açık mı"
           # sorusunu cevaplar. gRPC health protokolü Faz 7'nin işi.
           readinessProbe:

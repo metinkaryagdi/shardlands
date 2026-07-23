@@ -1,0 +1,34 @@
+# APP OF APPS — GitOps'un önyükleme deseni.
+#
+# Bu tek kaynak kümeye elle uygulanır; geri kalan HER ŞEYİ o çeker.
+# "Elle yapılan son iş" budur ve GitOps'un vaadi de tam olarak bu:
+# kümeye insan eli değmez, Git'e değer.
+#
+#   kubectl apply -f deploy/gitops/root.yaml
+#
+# Sonrasında `kubectl apply` bir DAĞITIM ARACI olmaktan çıkar; kümedeki
+# durum Git'ten türer ve elle yapılan değişiklikler DRIFT sayılıp geri
+# alınır (selfHeal).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shardlands-root
+  namespace: argocd
+  finalizers:
+    # Application silinince ürettiği kaynaklar da silinsin. Faz 6'da
+    # kendi operator'ümüzde yaşadığımız finalizer kilidinin aynısı
+    # burada da geçerli: ArgoCD ölürse bu finalizer takılır.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/metinkaryagdi/shardlands.git
+    targetRevision: HEAD
+    path: deploy/gitops/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

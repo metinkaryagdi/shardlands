@@ -1,0 +1,38 @@
+# DALGA 0: iş yükleri (namespace, NATS, player, hub, operator, PDB'ler).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shardlands-base
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/metinkaryagdi/shardlands.git
+    targetRevision: HEAD
+    path: deploy/k8s/base
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shardlands
+  syncPolicy:
+    automated:
+      # prune: Git'ten silinen kaynak kümeden de silinir. GitOps'un
+      # "Git tek gerçek kaynağıdır" iddiasının yarısı budur; olmadan
+      # küme yalnızca EKLEMELERİ takip eder ve zamanla çöp birikir.
+      prune: true
+      # selfHeal: elle yapılan değişiklik geri alınır. Diğer yarısı.
+      # Bir gece yarısı `kubectl scale` ile yapılan acil müdahale
+      # birkaç dakika sonra kendiliğinden geri alınır — bu bazen can
+      # sıkıcıdır ama kasıtlıdır: müdahale Git'e yazılmalıdır.
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false # namespace'i manifest olarak biz yönetiyoruz
+  # Kendi ürettiğimiz kaynakların drift sayılmaması için:
+  ignoreDifferences:
+    # Arena Pod'larını operator yaratır; ArgoCD'nin onları "fazlalık"
+    # görüp budamaması gerekir. Sahiplik ownerReference ile bizde.
+    - group: ""
+      kind: Pod
+      jsonPointers:
+        - /metadata/labels

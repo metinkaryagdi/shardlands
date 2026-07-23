@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"shardlands/services/server"
 )
@@ -53,7 +54,10 @@ func main() {
 	log.Printf("shardlands hub: http://localhost%s", *httpAddr)
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	// SIGTERM: Kubernetes kapanışı bununla ister. Yalnız SIGINT
+	// dinleyen bir süreç zarifçe kapanmaz, grace period dolunca
+	// SIGKILL yer — Drain() hiç çalışmaz, oturumlar sertçe kopar.
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	log.Println("kapanıyor...")
 	srv.Stop()

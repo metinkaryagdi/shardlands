@@ -26,16 +26,36 @@ type Service struct {
 
 	secret   []byte
 	tokenTTL time.Duration
+	// instance, bu kopyayı diğerlerinden ayıran ön ek. Boşsa tek kopya
+	// varsayılır ve kimlikler eskisi gibi "p-1" biçiminde üretilir.
+	instance string
 
 	mu      sync.Mutex
 	players map[string]*pb.Player
 	nextID  int64
 }
 
-func New(secret []byte) *Service {
+// New, tek kopyalık servis kurar (tek süreç geliştirme ve testler).
+func New(secret []byte) *Service { return NewInstance(secret, "") }
+
+// NewInstance, YATAY ÖLÇEKLENEBİLİR servis kurar.
+//
+// Neden ayrı bir yapıcı gerekti? Bu servis "durumsuz" görünüyordu ama
+// gizli bir durumu vardı: artan bir sayaç. İki kopya aynı anda koşsa
+// ikisi de "p-1" basar ve iki farklı oyuncu aynı kimliği taşır — token
+// imzası geçerli olduğu için hata da vermez, sessizce yanlış olur.
+//
+// Ders: bir servisin ölçeklenip ölçeklenemeyeceğini "veritabanı var mı"
+// diye bakarak anlayamazsın. Sayaçlar, rastgele tohumlar, yerel
+// önbellekler ve zaman damgaları da durumdur.
+//
+// instance genelde Pod adından gelir (aşağı yönlü API); Pod adları bir
+// namespace içinde benzersiz olduğu için ön ek de benzersizdir.
+func NewInstance(secret []byte, instance string) *Service {
 	return &Service{
 		secret:   secret,
 		tokenTTL: 24 * time.Hour,
+		instance: instance,
 		players:  map[string]*pb.Player{},
 	}
 }
@@ -49,6 +69,9 @@ func (s *Service) CreatePlayer(_ context.Context, req *pb.CreatePlayerRequest) (
 	s.mu.Lock()
 	s.nextID++
 	id := fmt.Sprintf("p-%d", s.nextID)
+	if s.instance != "" {
+		id = fmt.Sprintf("p-%s-%d", s.instance, s.nextID)
+	}
 	s.players[id] = &pb.Player{
 		PlayerId:      id,
 		Name:          name,

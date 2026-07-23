@@ -1,0 +1,34 @@
+# DALGA -1: mesh zero-trust politikaları.
+#
+# İş yüklerinden ÖNCE. Namespace'te default-inbound-policy: deny olduğu
+# için, kuralsız açılan bir iş yükü gereksiz bir yarış penceresi
+# bırakır (docs/service-mesh.md §6d).
+#
+# Not: Linkerd kurulu değilse bu Application "Unknown" kalır — CRD'leri
+# yok. Bu bilinçli: mesh'siz kurulum da geçerli bir çalışma biçimi ve
+# ArgoCD'nin buna dair yalan söylemesini istemiyoruz.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shardlands-mesh
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/metinkaryagdi/shardlands.git
+    targetRevision: HEAD
+    path: deploy/k8s/mesh
+    directory:
+      # rogue Job'ı bir TEST kaynağıdır, sürekli uzlaştırılacak bir
+      # dağıtım parçası değil. Job'lar değişmez (immutable) olduğu için
+      # ArgoCD onu her sync'te yeniden yaratmaya çalışıp hata verirdi.
+      exclude: "99-*.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shardlands
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

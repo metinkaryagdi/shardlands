@@ -68,20 +68,64 @@ async function join() {
   const { playerId, token } = await res.json();
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  const wsURL = `${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`;
 
-  ws.onopen = () => {
-    $("login").hidden = true;
-    canvas.hidden = false;
-    $("chat").hidden = false;
-    $("trade").hidden = false;
-    $("hud").textContent = "bağlandı — WASD/oklar · E: topla · sohbet kutusu · takas paneli";
-    $("globals").hidden = false;
-    refreshChatLog();
-    refreshStats();
-    setInterval(refreshChatLog, 5000);
-    setInterval(refreshStats, 2000);
-  };
+  // KESİNTİSİZ DAĞITIMIN SON METRESİ İSTEMCİDEDİR.
+  //
+  // Hub tek kopya olduğu için yeniden dağıtımı kısa bir kesinti üretir
+  // (bkz. docs/zero-downtime.md §4). Sunucu tarafında yapılabilecek her
+  // şey yapıldıktan sonra geriye kalan tek çare, istemcinin kopan
+  // bağlantıyı kendisi toparlamasıdır. Token 24 saat geçerli; yeniden
+  // bağlanmak için tekrar giriş yapmak gerekmez.
+  //
+  // Üstel geri çekilme + JİTTER: kesintiden çıkan sunucuya bütün
+  // istemciler aynı anda yüklenirse (thundering herd) sunucu tekrar
+  // düşer. Rastgele dağıtmak bunu engeller — Faz 4'teki yeniden deneme
+  // tartışmasının istemci tarafındaki karşılığı.
+  let ws, firstOpen = true, retry = 0, invTimer = null;
+
+  function connect() {
+    ws = new WebSocket(wsURL);
+
+    ws.onopen = () => {
+      retry = 0;
+      $("hud").textContent = "bağlandı — WASD/oklar · E: topla · sohbet kutusu · takas paneli";
+      if (!firstOpen) return;
+      firstOpen = false;
+      // Tek seferlik kurulum: yeniden bağlanmada TEKRARLANMAMALI,
+      // yoksa her kopuşta bir zamanlayıcı daha birikir.
+      $("login").hidden = true;
+      canvas.hidden = false;
+      $("chat").hidden = false;
+      $("trade").hidden = false;
+      $("globals").hidden = false;
+      refreshChatLog();
+      refreshStats();
+      setInterval(refreshChatLog, 5000);
+      setInterval(refreshStats, 2000);
+    };
+
+    ws.onclose = () => {
+      const delay = Math.min(500 * 2 ** retry, 8000) * (0.5 + Math.random());
+      retry++;
+      $("hud").textContent = `bağlantı koptu — ${(delay / 1000).toFixed(1)}sn içinde yeniden bağlanılıyor…`;
+      setTimeout(connect, delay);
+    };
+
+    ws.onmessage = ev => {
+      const m = JSON.parse(ev.data);
+      if (m.type === "welcome") {
+        me = m.id; cols = m.cols || 2; rows = m.rows || 2;
+        refreshInventory();
+        if (!invTimer) invTimer = setInterval(refreshInventory, 3000);
+      }
+      else if (m.type === "snapshot") {
+        tick = m.tick; players = m.players; nodes = m.nodes || [];
+        region = m.region || ""; shard = m.shard || ""; draw();
+      }
+    };
+  }
+  connect();
 
   // Takas: kimlik doğrulanmış oyuncu (bu token) teklif verir; sunucudaki
   // saga orkestratörü rezerve → (auto-accept) → çapraz transfer yapar.
@@ -102,15 +146,6 @@ async function join() {
       $("tradeMsg").textContent = r.phase === "settled" ? "✓ takas tamam" : `✗ ${r.reason || r.phase}`;
       refreshInventory();
     } catch (e) { $("tradeMsg").textContent = "hata"; }
-  };
-  ws.onclose = () => { $("hud").textContent = "bağlantı koptu"; };
-  ws.onmessage = ev => {
-    const m = JSON.parse(ev.data);
-    if (m.type === "welcome") { me = m.id; cols = m.cols || 2; rows = m.rows || 2; refreshInventory(); setInterval(refreshInventory, 3000); }
-    else if (m.type === "snapshot") {
-      tick = m.tick; players = m.players; nodes = m.nodes || [];
-      region = m.region || ""; shard = m.shard || ""; draw();
-    }
   };
 
   // Girdi: basılı tuş DURUMU gönderilir (pozisyon değil — sunucu

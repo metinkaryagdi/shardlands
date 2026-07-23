@@ -25,6 +25,9 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081", "metrics adresi")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8082", "sağlık probu adresi")
 	flag.StringVar(&namespace, "namespace", "", "izlenecek namespace (boş = tümü)")
+	var leaderElect bool
+	flag.BoolVar(&leaderElect, "leader-elect", false,
+		"lider seçimi (kümede açık; `go run` ile geliştirirken kapalı)")
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
@@ -44,6 +47,20 @@ func main() {
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
+		// LİDER SEÇİMİ. Rolling update sırasında eski ve yeni Pod bir
+		// süre BİRLİKTE yaşar. İki reconciler aynı anda koşarsa aynı
+		// Arena için iki Pod yaratmaya çalışır; reconcile idempotent
+		// olduğu için çoğu durumda zarar vermez (Create -> AlreadyExists)
+		// ama TTL/silme yarışları için aynı şey söylenemez.
+		//
+		// Kilit bir Lease kaynağıdır: kendi pkg/dlock'umuzun yaptığı işin
+		// aynısı — kiralık kilit, süresi dolunca serbest kalır. Fark,
+		// buradaki kilidin arkasında bizim Raft'ımız değil etcd var.
+		LeaderElection:   leaderElect,
+		LeaderElectionID: "shardlands-operator.shardlands.dev",
+		// Lider olamayan kopya BEKLER ve hazır sayılmaz; lider ölünce
+		// kirayı devralır. Kesinti kira süresi kadardır (~15sn).
+		LeaderElectionReleaseOnCancel: true,
 	}
 	if namespace != "" {
 		// Cache'i tek namespace'e daraltmak yalnız bellek tasarrufu

@@ -1,0 +1,35 @@
+# DALGA -2: Arena CRD'si.
+#
+# SYNC WAVE = SIRA. Faz 6 boyunca öğrendiğimiz iki sıra kuralı burada
+# beyan edilir hale geliyor:
+#   -2  CRD        (tip tanımlanmadan onu kullanan hiçbir şey açılamaz)
+#   -1  politikalar (deny altında iş yükünü kuralsız açma)
+#    0  iş yükleri
+#
+# Betikteki `kubectl apply` sırasının yerini bu alıyor. Fark önemli:
+# betik bir KEZ doğru sırayı uygular, sync wave ise HER uzlaştırmada
+# uygular — küme yeniden kurulsa, kaynak silinse, drift olsa bile.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shardlands-crd
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/metinkaryagdi/shardlands.git
+    targetRevision: HEAD
+    path: operator/config/crd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shardlands
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # CRD'ler büyük olabilir; son-uygulanan-yapılandırma annotation'ı
+      # 256KB sınırını aşabildiği için sunucu tarafı apply kullanılır.
+      - ServerSideApply=true
