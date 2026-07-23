@@ -1,3 +1,16 @@
+> **English summary:** Shardlands is a solo learning project that uses a small
+> multiplayer game as a vehicle to implement distributed-systems concepts from
+> scratch and prove them under real failure conditions: a hand-written Raft
+> consensus module, an LSM-tree storage engine, an actor framework, a
+> lock-free MPSC queue, CRDTs, CQRS/event sourcing, choreography and
+> orchestration sagas, consistent hashing with shard leadership, a custom
+> Kubernetes operator (CRD + reconcile loop), service mesh with mTLS/zero
+> trust, Vault-backed secret rotation, and chaos experiments — each phase
+> tagged (`faz0`–`faz7`) and backed by measurements taken on a real cluster.
+> See [LEARNINGS.md](./LEARNINGS.md) for the 12 lessons that repeated across
+> phases. The rest of this README is in Turkish (the language the project was
+> reasoned through in) — machine translation works well if needed.
+
 # Shardlands
 
 **Dağıtık sistem kavramlarını uçtan uca uygulamak için yazılmış bir
