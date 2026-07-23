@@ -1,30 +1,64 @@
 # Shardlands
 
-2D top-down mini-MMO: kalıcı, shard'lanmış bir hub dünyası + talep üzerine
-açılan gerçek zamanlı arena instance'ları. Amaç, dağıtık sistem
-konseptlerini (konsensüs, event sourcing, sharding, actor model, CRDT,
-observability...) üretim kalitesinde ama öğrenme odaklı bir projede uçtan
-uca uygulamak.
+**Dağıtık sistem kavramlarını uçtan uca uygulamak için yazılmış bir
+öğrenme projesi.** Konsensüs, event sourcing, sharding, aktör modeli,
+CRDT, service mesh, gözlemlenebilirlik — hepsi tek bir çalışan sistemde,
+teker teker ve *neden böyle* gerekçeleriyle.
 
-**Sekiz faz tamamlandı** (`faz0` … `faz7`). Faz 0'ın bütün altyapısı —
-aktör sistemi, lock-free ring buffer, LSM-tree, Raft, CRDT, consistent
-hashing, dağıtık kilit — **kütüphanesiz, sıfırdan** yazıldı; amaç en hızlı
-çözümü bulmak değil mekanizmayı anlamaktı.
+Taşıyıcı senaryo bir 2D mini-MMO: kalıcı ve shard'lanmış bir **hub
+dünyası** + talep üzerine açılan gerçek zamanlı **arena instance'ları**.
+Oyun bir bahane — bilinçli olarak seçilmiş bir bahane, çünkü bu iki iş
+yükü **taban tabana zıt** gereksinimlere sahip ve bir sistemin aynı anda
+iki farklı tutarlılık/gecikme profilini nasıl taşıyabileceğini gösteriyor.
 
-> 📖 **[LEARNINGS.md](LEARNINGS.md)** — sekiz faz boyunca tekrar eden 12
-> ders. Fazların özeti değil; aynı ilkenin farklı katmanlarda nasıl
-> tekrar tekrar karşımıza çıktığının derlemesi. Projeyle ilgili tek bir
-> şey okunacaksa o olmalı.
+```mermaid
+graph LR
+    C["🎮 istemci<br/>(Canvas + WS)"] --> GW["gateway / BFF"]
+    GW --> W["hub dünyası<br/>20 Hz · tutarlılık öncelikli<br/>event-sourced · bölünmede DONAR"]
+    GW --> MM[matchmaking saga]
+    MM -->|"Arena CRD"| OP["kendi K8s operator'ümüz"]
+    OP --> A["arena Pod'u<br/>30 Hz · gecikme öncelikli<br/>lock-free · yükte KOMUT DÜŞÜRÜR"]
+    GW -->|"mTLS, gRPC vekil"| A
+    W --> ES[("event store<br/>LSM + WAL")]
+    W --> RAFT[("Raft<br/>shard liderliği")]
+```
+
+## Neden bakmaya değer?
+
+1. **Altyapının tamamı sıfırdan.** Aktör sistemi, lock-free MPSC ring
+   buffer, LSM-tree + WAL, Raft, vector clock, CRDT, consistent hashing,
+   dağıtık kilit, event store, JWT, W3C trace context, Vault istemcisi —
+   hiçbiri kütüphane değil. Amaç en hızlı çözümü bulmak değil,
+   **mekanizmayı anlamaktı**.
+2. **Her iddia ölçüldü.** "Kesintisiz dağıtım yaptık" demek yerine
+   ölçüldü (player 0 hata, hub ~4 sn — ikincisi gizlenmedi). Alarm
+   kuralları yazılmakla kalmadı, hata bütçesi bilerek yakılıp
+   **ateşlendiği görüldü**, sonra kendiliğinden söndüğü doğrulandı.
+3. **Yapılmayanlar da yazılı.** Hub'ın neden yatay ölçeklenemediği,
+   Vault'un neden dev modunda olduğu, Pushgateway'in neden kurulmadığı —
+   hepsi gerekçesiyle. *Bir projenin dürüstlüğü, yaptıklarından çok
+   yapmadıklarını nasıl yazdığıyla ölçülür.*
+
+## Nereden başlamalı?
+
+| Ne kadar vaktin var? | Oku |
+| --- | --- |
+| **5 dakika** | Bu sayfa + aşağıdaki ölçümler |
+| **20 dakika** | 📖 **[LEARNINGS.md](LEARNINGS.md)** — sekiz faz boyunca tekrar eden 12 ders. Faz özeti değil; aynı ilkenin farklı katmanlarda nasıl tekrar çıktığının sentezi. **Tek bir şey okunacaksa bu.** |
+| **1 saat** | [docs/](docs/) altındaki 10 kavram notu — her biri koda geçmeden önce yazılmış "neden böyle" belgesi |
+| **Çalıştırmak** | [Çalıştırma](#çalıştırma) — tek süreçte `go run`, ya da kind ile kümede |
+| **Kod okumak** | `pkg/` (sıfırdan altyapı) → `services/` (iş mantığı) → `deploy/` (platform) |
 
 ## Bir bakışta
 
 | | |
 | --- | --- |
-| **İki farklı gecikme profili** | Hub tutarlılık öncelikli (20 Hz, event-sourced, bölünmede **donar**); arena gecikme öncelikli (30 Hz, lock-free, aşırı yükte **komut düşürür**) |
-| **Sıfırdan yazılanlar** | aktör sistemi, MPSC ring buffer, LSM+WAL, Raft, vector clock, CRDT, consistent hashing, dlock, event store, JWT, W3C trace context, Vault istemcisi |
+| **Durum** | Sekiz faz tamamlandı (`faz0` … `faz7`), her biri kendi etiketiyle |
+| **İki gecikme profili** | Hub tutarlılık öncelikli (20 Hz, event-sourced, bölünmede **donar**); arena gecikme öncelikli (30 Hz, lock-free, aşırı yükte **komut düşürür**) |
 | **Platform** | Kubernetes, Linkerd (mTLS + zero trust), ArgoCD (GitOps), Vault, Prometheus |
 | **Doğrulama** | 46 test dosyası, 6 kaos deneyi, kümede uçtan uca duman testi |
 | **Ölçek** | ~21.000 satır Go, 10 kavram notu |
+| **Dil** | Kod yorumları ve dokümantasyon **Türkçe** (bilinçli: gerekçeleri ana dilde yazmak, kopyalanmış açıklama üretmeyi zorlaştırıyor) |
 
 ### Öne çıkan ölçümler
 
@@ -484,6 +518,8 @@ tek trace: istemci span       8.958 ms / sunucu span 0.031 ms
   docs/observability.md §5'te karar kaydı olarak duruyor.
 
 ## Çalıştırma
+
+Gereken: Go 1.26+. Kümede çalıştırmak için ayrıca Docker + kind + kubectl.
 
 ```powershell
 go run ./cmd/server        # http://localhost:8080 — iki sekme aç

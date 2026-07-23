@@ -6,6 +6,24 @@ ilkeler**. Tekrarı görünür kılmak, tek tek fazları anlatmaktan daha
 öğretici oldu: aynı ders üç ayrı katmanda karşınıza çıktığında, onun
 bir teknoloji ayrıntısı değil bir düşünme biçimi olduğunu anlıyorsunuz.
 
+Derslerin çoğu **hata yaparak** öğrenildi; her birinin altında o hatanın
+nasıl göründüğü ve nasıl bulunduğu yazılı.
+
+| # | Ders | Tek cümlede |
+| --- | --- | --- |
+| [1](#1-söylediğine-güvenme-kanıtı-iste) | Kanıt iste | İddiayı, iddia edenin kendisi doğrulamaz |
+| [2](#2-panoda-doğru-görünmek-çalışmak-değildir) | Panoda yeşil ≠ çalışıyor | Beş kez düştüm; en sinsisi "0 kesinti" diye okunan bilinmezlikti |
+| [3](#3-süreç-içi-durum-süreçten-uzun-yaşayan-durumla-buluşunca-patlar) | Gizli durum | "Veritabanı yok" ≠ durumsuz; sayaç da durumdur |
+| [4](#4-sınır-durumları-tasarımın-parçasıdır-sonradan-eklenen-yama-değil) | Sınır durumları | Sonradan bulunursa, genelde üretimde bulunur |
+| [5](#5-türetilebilen-türetilir-türetilemeyen-persist-edilir) | Ne saklanır | Her şeyi kalıcı yapmak da bir hatadır |
+| [6](#6-aynı-sistemde-iki-farklı-tutarlılıkgecikme-profili-yaşayabilir) | İki profil | "Hangi mimari doğru" değil, "hangi iş yükü için" |
+| [7](#7-bağımlılık-arızasında-kendini-öldürme) | Yumuşak bağımlılık | Arızayı yut **ve** yuttuğunu görünür kıl |
+| [8](#8-gözlem-katmanı-gözlediği-şeyi-değiştirmemeli) | Gözlemci etkisi | Ölçüm aracı da yalan söyleyebilir |
+| [9](#9-kesişen-ilgiler-tek-yerde-çözülür--ama-hangi-tek-yer) | Hangi "tek yer" | Kod / sidecar / interceptor — üçü de doğru, farklı sorularda |
+| [10](#10-sıra-çoğu-zaman-ayardan-daha-önemli) | Sıra | Çalışmama sebebi sık sık bir değer değil, bir sıra |
+| [11](#11-teşhis-hipotezle-değil-tek-değişken-değiştirerek) | Teşhis yöntemi | Katmanlı sistemde belirti, sebebin katmanında görünmez |
+| [12](#12-öğrenme-sırası-önce-mekanizmayı-yaz-sonra-hazırını-tanı) | Öğrenme sırası | Bir kez elle yazmak, on kez kullanmaktan çok öğretir |
+
 ---
 
 ## 1. Söylediğine güvenme, kanıtı iste

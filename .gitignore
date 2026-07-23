@@ -16,3 +16,25 @@ coverage.*
 .idea/
 .vscode/
 Thumbs.db
+
+# SIRLAR VE KİMLİK BİLGİLERİ
+#
+# Şu an bunlardan hiçbiri depoda yok (tarandı) — bu blok ÖNLEYİCİDİR.
+# Sebebi docs/secrets.md §1'de yazılı: Git'e giren sır kümeden
+# silinebilir ama GEÇMİŞTEN silinemez; pratikte "sızmış" sayılır ve
+# döndürülmesi gerekir. En ucuz savunma, hiç girmemesini sağlamak.
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.env
+.env.*
+kubeconfig
+*.kubeconfig
+# Vault/kind gibi araçların ürettiği yerel durum
+.linkerd2/
+linkerd-identity-issuer*
+# Yerel deneme çıktıları
+*.log
+/tmp/
