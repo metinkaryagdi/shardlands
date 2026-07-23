@@ -19,6 +19,7 @@ import (
 
 	pb "shardlands/gen/shardlands/v1"
 	"shardlands/pkg/actor"
+	"shardlands/pkg/auth"
 	"shardlands/pkg/bus"
 	"shardlands/pkg/dlock"
 	"shardlands/pkg/es"
@@ -45,11 +46,17 @@ type Config struct {
 	// proxy görmez). Bkz. docs/service-mesh.md §5.
 	PlayerTarget    string
 	MatchmakingAddr string
-	Secret          []byte
-	ClientDir       string
-	DataDir         string   // event store'un yaşadığı dizin
-	Shards          []string // shard node id'leri (boşsa iki node varsayılan)
-	ShardReplicas   int      // shard başına Raft replikası (boşsa 3)
+	// Secret, TEK anahtarlı kolaylık alanı (testler, tek süreç
+	// geliştirme). Keys verilmişse yok sayılır.
+	Secret []byte
+	// Keys, anahtar zinciri. Vault'tan besleniyorsa buradan geçirilir;
+	// zincir dışarıdan güncellendiğinde sunucu yeniden başlatılmadan
+	// yeni anahtara döner (docs/secrets.md).
+	Keys          *auth.Keyring
+	ClientDir     string
+	DataDir       string   // event store'un yaşadığı dizin
+	Shards        []string // shard node id'leri (boşsa iki node varsayılan)
+	ShardReplicas int      // shard başına Raft replikası (boşsa 3)
 	// Provisioner, arena sağlayıcısı. Boşsa arenalar BU süreçte açılır
 	// (LocalProvisioner). Kubernetes kurulumunda K8sProvisioner geçilir;
 	// gateway uzak arenaya gRPC ile vekil eder.
@@ -96,6 +103,11 @@ func Start(cfg Config) (*Server, error) {
 	if len(cfg.Shards) == 0 {
 		cfg.Shards = []string{"shard-0", "shard-1"}
 	}
+	// Anahtar zinciri: dışarıdan verilmediyse tek anahtardan kur.
+	keys := cfg.Keys
+	if keys == nil {
+		keys = auth.NewKeyring(cfg.Secret)
+	}
 	s := &Server{stopTick: make(chan struct{})}
 
 	// İç servisler: gerçek gRPC sunucuları (in-process ama ağ üstünde).
@@ -104,7 +116,7 @@ func Start(cfg Config) (*Server, error) {
 	if playerAddr == "" {
 		var err error
 		playerAddr, err = s.serveGRPC(cfg.PlayerAddr, func(gs *grpc.Server) {
-			pb.RegisterPlayerServiceServer(gs, player.New(cfg.Secret))
+			pb.RegisterPlayerServiceServer(gs, player.NewKeyring(keys, ""))
 		})
 		if err != nil {
 			return nil, err
@@ -243,7 +255,7 @@ func Start(cfg Config) (*Server, error) {
 	locks.WaitReady(5 * time.Second)
 
 	gw := gateway.New(gateway.Config{
-		Secret:    cfg.Secret,
+		Keys:      keys,
 		ClientDir: cfg.ClientDir,
 		System:    s.system,
 		Router:    router,

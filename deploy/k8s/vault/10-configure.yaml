@@ -1,0 +1,73 @@
+# Vault yapılandırma Job'ı: Kubernetes auth + politika + ilk sır.
+#
+# Bu Job elle yapılacak işi manifeste çevirir. Kritik nokta POLİTİKANIN
+# DARLIĞI: uygulama Vault'ta yalnız TEK BİR YOLU okuyabilir. Ele geçen
+# bir hub Pod'u Vault'un geri kalanını göremez — zero trust'ın sır
+# yönetimi tarafındaki karşılığı, mesh'teki AuthorizationPolicy ile
+# aynı fikir.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-configure
+  namespace: shardlands
+spec:
+  backoffLimit: 5 # Vault hazır olana kadar yeniden dene
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: enabled
+        config.alpha.linkerd.io/proxy-enable-native-sidecar: "true"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: vault
+      containers:
+        - name: configure
+          image: hashicorp/vault:1.18
+          env:
+            - name: VAULT_ADDR
+              value: "http://vault.shardlands.svc.cluster.local:8200"
+            - name: VAULT_TOKEN
+              value: "root" # yalnız dev modu
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "==> Vault bekleniyor"
+              until vault status >/dev/null 2>&1; do sleep 2; done
+
+              echo "==> kubernetes auth"
+              vault auth enable kubernetes 2>/dev/null || true
+              # Vault, kendi ServiceAccount token'ıyla apiserver'a
+              # TokenReview sorar. token_reviewer_jwt verilmezse Vault
+              # kendi Pod'undaki token'ı kullanır (bizde de öyle).
+              vault write auth/kubernetes/config \
+                kubernetes_host="https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT"
+
+              echo "==> politika (yalnız tek yol, yalnız okuma)"
+              vault policy write shardlands - <<'POLICY'
+              path "secret/data/shardlands/jwt" {
+                capabilities = ["read"]
+              }
+              POLICY
+
+              echo "==> rol: hangi ServiceAccount'lar bu politikayı alır"
+              # Yalnız hub ve player. Rogue bir Pod, başka bir
+              # ServiceAccount ile geldiği için giriş bile yapamaz.
+              vault write auth/kubernetes/role/shardlands \
+                bound_service_account_names=shardlands-server,shardlands-player \
+                bound_service_account_namespaces=shardlands \
+                policies=shardlands \
+                ttl=1h
+
+              echo "==> ilk imzalama anahtarı"
+              # Var olan sırrı EZME: rotasyon sonrası Job yeniden
+              # koşarsa anahtarı geri almamalı (idempotent olmak,
+              # üzerine yazmak demek değildir).
+              if vault kv get secret/shardlands/jwt >/dev/null 2>&1; then
+                echo "sır zaten var, dokunulmuyor"
+              else
+                vault kv put secret/shardlands/jwt \
+                  jwt_signing_key="$(head -c 32 /dev/urandom | base64)" \
+                  jwt_previous_keys=""
+              fi
+              echo "==> tamam"

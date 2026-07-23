@@ -11,6 +11,7 @@ deploy/
   k8s/base/     namespace, NATS, player, sunucu, operator (+RBAC, PDB)
   k8s/local/    yalnız yerel küme için NodePort
   k8s/mesh/     Linkerd zero-trust politikaları (Server/AuthorizationPolicy)
+  k8s/vault/    Vault (dev modu) + Kubernetes auth/politika yapılandırması
   mesh/         Linkerd kontrol düzlemi kurulumu
   gitops/       ArgoCD kurulumu + app-of-apps (sync wave'li Application'lar)
   kind/         küme yapılandırması + up/down betikleri
@@ -303,12 +304,82 @@ davranıştır. Araç artık 429'u ayrı sayıyor ve varsayılan aralık
 sınırlayıcının doldurma hızına (1/sn) eşit. **Ölçüm aracının ne
 ölçtüğünü bilmesi gerekir.**
 
-## Sırlar
+## Sırlar (Vault)
 
-`shardlands-secret` şu an düz metin bir `Secret` — JWT imzalama anahtarı.
-**Üretime böyle gitmez**: Kubernetes Secret'ları varsayılan olarak yalnız
-base64'tür, şifreli değildir. Vault entegrasyonu (Faz 6'nın sonraki adımı)
-bunu değiştirecek; buraya kadar bilinçli bir borç olarak duruyor.
+Kavramsal anlatım: [docs/secrets.md](../docs/secrets.md).
+
+```bash
+kubectl apply -f deploy/k8s/vault/
+kubectl apply -f deploy/k8s/mesh/14-policy-vault.yaml
+kubectl -n shardlands rollout restart deployment/player statefulset/shardlands
+```
+
+`VAULT_ADDR` tanımlıyken JWT imzalama anahtarı Vault'tan gelir ve arka
+planda tazelenir; tanımsızsa `SHARDLANDS_SECRET`'a düşülür. Hangi
+kaynağın kullanıldığı **açılışta log'a yazılır** — sessizce geliştirme
+sırrıyla üretime çıkmak, olabilecek en pahalı hatalardan biri.
+
+### Sır sıfırı zinciri
+
+```
+Pod ──(ServiceAccount token)──> Vault ──(TokenReview)──> kube-apiserver
+Pod <────(Vault token)──────── Vault <──("evet, bu SA")──┘
+```
+
+Vault kimseye güvenmiyor, token'ı **imzalayana** soruyor. Mesh'teki
+mTLS kimliğiyle aynı fikir: söylediğine güvenme, kanıtı iste.
+
+### Rotasyon deneyi (kümede koşturuldu)
+
+Rotasyonun iddiası: **yeni anahtar devreye girerken eski token'lar
+çalışmaya devam eder.** Üç adım ve ölçülen sonuçlar:
+
+| Adım | Eski token | Yeni token | Sahte token |
+| --- | --- | --- | --- |
+| Rotasyondan önce | 200 | — | — |
+| 1) Yeni anahtar başa, eski doğrulamada | **200** | **200** | 401 |
+| 3) Eski anahtar düşürüldü | **401** | **200** | 401 |
+
+Son satır, iki token'ın gerçekten **farklı anahtarlarla** imzalandığının
+kanıtı. Bu süre boyunca **hiçbir Pod yeniden başlatılmadı** (restart
+sayacı 0) — `vault.KeySource` sırrı 20 saniyede bir okuyup zinciri
+atomik olarak değiştiriyor.
+
+Denemek için:
+
+```bash
+VP=$(kubectl -n shardlands get pod -l app=vault -o jsonpath='{.items[0].metadata.name}')
+kubectl -n shardlands exec $VP -c vault -- sh -c \
+  'export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root
+   ESKI=$(vault kv get -field=jwt_signing_key secret/shardlands/jwt)
+   vault kv put secret/shardlands/jwt \
+     jwt_signing_key="$(head -c 32 /dev/urandom | base64)" \
+     jwt_previous_keys="$ESKI"'
+```
+
+### Vault'u kurarken çıkan üç engel (hepsi aynı sebepten)
+
+`capabilities: drop: ["ALL"]` duruşumuz Vault imajıyla üç kez çakıştı:
+
+1. `unable to set CAP_SETFCAP` — imaj açılışta `IPC_LOCK` almak istiyor
+   (sırlar takasa yazılmasın diye). `SKIP_SETCAP=true` ile atlandı.
+2. `su-exec: setgroups: Operation not permitted` — giriş betiği root'tan
+   `vault` kullanıcısına düşmek istiyor, bu da SETGID/SETUID istiyor.
+   Yetki geri vermek yerine **zaten o kullanıcı olarak başladık**
+   (`runAsUser: 100`); root değilsek betik o dalı hiç çalıştırmıyor.
+3. Bedeli açıkça: mlock kapalı olduğu için Vault'un belleği takas
+   alanına yazılabilir. Üretimde doğru cevap IPC_LOCK vermektir.
+
+Genel ders: en dar güvenlik profili, kendi ayrıcalıklarını yönetmeyi
+bekleyen imajlarla çatışır. Her çatışmada "yetkiyi geri ver" ile
+"ihtiyacı ortadan kaldır" seçenekleri vardır; ikincisi tercih edilmeli.
+
+### Düz metin Secret neden hâlâ duruyor?
+
+`shardlands-secret` silinmedi. Silmek "sır yönetimi çözüldü" yanılsaması
+üretirdi; çözülen şey **üretim yolu**. O Secret zaten Git geçmişinde ve
+oradan silinemez — bu da tam olarak neden Vault'a geçtiğimizin
+hatırlatıcısı (docs/secrets.md §1).
 
 ## Sık karşılaşılan tuzaklar (yaşanmış)
 

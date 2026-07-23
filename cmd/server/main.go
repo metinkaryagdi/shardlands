@@ -5,12 +5,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"shardlands/internal/keys"
 	"shardlands/services/server"
 )
 
@@ -20,11 +22,15 @@ func main() {
 	dataDir := flag.String("data", "data", "event store dizini")
 	flag.Parse()
 
-	secret := []byte(os.Getenv("SHARDLANDS_SECRET"))
-	if len(secret) == 0 {
-		secret = []byte("dev-secret-change-me") // Faz 6: Vault
-		log.Println("uyarı: SHARDLANDS_SECRET yok, geliştirme sırrı kullanılıyor")
+	// Anahtar zinciri: Vault varsa oradan, yoksa ortam değişkeninden.
+	// Vault kullanılıyorsa zincir arka planda tazelenir ve anahtar
+	// rotasyonu süreç yeniden başlatılmadan devreye girer.
+	ctx, cancelKeys := context.WithCancel(context.Background())
+	keyring, stopKeys, err := keys.Load(ctx)
+	if err != nil {
+		log.Fatalf("anahtarlar yüklenemedi: %v", err)
 	}
+	defer func() { stopKeys(); cancelKeys() }()
 
 	// ARENA_NAMESPACE varsa arenalar CRD ile kümede açılır; yoksa nil
 	// döner ve sunucu yerel sağlayıcıyı kullanır (tek süreç geliştirme).
@@ -37,7 +43,7 @@ func main() {
 		HTTPAddr:        *httpAddr,
 		PlayerAddr:      "127.0.0.1:9101",
 		MatchmakingAddr: "127.0.0.1:9102",
-		Secret:          secret,
+		Keys:            keyring,
 		ClientDir:       *clientDir,
 		DataDir:         *dataDir,
 		Provisioner:     prov,

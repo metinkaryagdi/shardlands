@@ -1,0 +1,50 @@
+# VAULT — sırların kaynağı. Kümedeki en değerli uç nokta.
+#
+# Yalnız hub ve player kimliği çağırabilir. Vault'un kendi
+# yetkilendirmesi (politika + rol) zaten var; bu politika onun ÜSTÜNE
+# gelen ikinci bir kattır.
+#
+# Neden iki kat? Çünkü ikisi farklı soruları cevaplıyor:
+#   - Vault politikası: "bu kimlik HANGİ YOLU okuyabilir?"
+#   - Mesh politikası:  "bu Pod Vault'a BAĞLANABİLİR Mİ?"
+# İlki ele geçen bir kimliğin yapabileceklerini daraltır; ikincisi
+# kimliği olmayanın Vault'un giriş uç noktasına ulaşmasını bile
+# engeller. Savunma derinliği (defense in depth).
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: vault-http
+  namespace: shardlands
+spec:
+  podSelector:
+    matchLabels:
+      app: vault
+  port: http
+  proxyProtocol: HTTP/1
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  name: vault-clients
+  namespace: shardlands
+spec:
+  identities:
+    - "shardlands-server.shardlands.serviceaccount.identity.linkerd.cluster.local"
+    - "shardlands-player.shardlands.serviceaccount.identity.linkerd.cluster.local"
+    # Yapılandırma Job'ı vault ServiceAccount'uyla koşar.
+    - "vault.shardlands.serviceaccount.identity.linkerd.cluster.local"
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: vault-http-clients-only
+  namespace: shardlands
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: vault-http
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: vault-clients

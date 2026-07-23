@@ -44,7 +44,10 @@ import (
 )
 
 type Config struct {
-	Secret    []byte
+	// Keys, token doğrulama anahtar zinciri. Rotasyon sırasında birden
+	// çok anahtar taşır: yeni anahtarla imzalananlar da eskiyle
+	// imzalananlar da doğrulanır (pkg/auth/keyring.go).
+	Keys      *auth.Keyring
 	ClientDir string // statik istemci dosyaları (index.html)
 	System    *actor.System
 	Router    *world.Router
@@ -243,7 +246,7 @@ func (g *Gateway) handleStats(w http.ResponseWriter, r *http.Request) {
 // Canlı yolda karşı taraf otomatik kabul eder (AutoAccept) — gerçek onay
 // UX'i (karşı tarafın istemcisinde "kabul et" akışı) kapsam dışı.
 func (g *Gateway) handleTrade(w http.ResponseWriter, r *http.Request) {
-	claims, err := auth.Verify(g.cfg.Secret, r.URL.Query().Get("token"))
+	claims, err := g.cfg.Keys.Verify(r.URL.Query().Get("token"))
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -328,7 +331,7 @@ type enterHubMsg struct {
 var errStaleToken = errors.New("gateway: stale handoff token")
 
 func (g *Gateway) handleWS(w http.ResponseWriter, r *http.Request) {
-	claims, err := auth.Verify(g.cfg.Secret, r.URL.Query().Get("token"))
+	claims, err := g.cfg.Keys.Verify(r.URL.Query().Get("token"))
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

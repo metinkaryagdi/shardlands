@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 
 	pb "shardlands/gen/shardlands/v1"
+	"shardlands/internal/keys"
 	"shardlands/services/player"
 )
 
@@ -29,11 +31,15 @@ func main() {
 	addr := flag.String("grpc", ":9101", "gRPC dinleme adresi")
 	flag.Parse()
 
-	secret := []byte(os.Getenv("SHARDLANDS_SECRET"))
-	if len(secret) == 0 {
-		secret = []byte("dev-secret-change-me") // Faz 6: Vault
-		log.Println("uyarı: SHARDLANDS_SECRET yok, geliştirme sırrı kullanılıyor")
+	// Anahtar zinciri: Vault varsa oradan. Player TOKEN BASAN taraf
+	// olduğu için rotasyonda kritik olan bu süreçtir — yeni anahtar
+	// buraya ulaşmadan imzalama dönmez.
+	ctx, cancelKeys := context.WithCancel(context.Background())
+	keyring, stopKeys, err := keys.Load(ctx)
+	if err != nil {
+		log.Fatalf("player: anahtarlar yüklenemedi: %v", err)
 	}
+	defer func() { stopKeys(); cancelKeys() }()
 
 	// Kopya ön eki: Pod adı (aşağı yönlü API) — bir namespace içinde
 	// benzersizdir. Yoksa hostname'e düş; o da yoksa tek kopya say.
@@ -48,7 +54,7 @@ func main() {
 		log.Fatalf("player: listen: %v", err)
 	}
 	gs := grpc.NewServer()
-	pb.RegisterPlayerServiceServer(gs, player.NewInstance(secret, instance))
+	pb.RegisterPlayerServiceServer(gs, player.NewKeyring(keyring, instance))
 	go func() {
 		if err := gs.Serve(lis); err != nil {
 			log.Printf("player: serve: %v", err)

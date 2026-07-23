@@ -1,0 +1,129 @@
+# Vault — DEV MODU. Üretim kurulumu değil, öğrenme kurulumu.
+#
+# dev modunun yaptıkları ve neden üretimde kabul edilemez olduğu:
+#   - Depolama BELLEKTE. Pod yeniden başlarsa bütün sırlar gider.
+#   - Otomatik unseal, sabit root token. Gerçek Vault'ta açılışta
+#     Shamir anahtar paylarıyla (ya da auto-unseal ile) mühür açılır;
+#     bu, "sırların sırrı"nın nasıl korunduğu sorusunun asıl cevabıdır.
+#   - TLS yok, düz HTTP. Mesh mTLS'i taşıdığı için küme içinde
+#     kabul edilebilir; küme dışına açılsa olmazdı.
+#
+# Bu dosyanın amacı Vault'u öğretmek değil, UYGULAMANIN VAULT'LA
+# KONUŞMASINI öğretmek: sır sıfırı problemi, Kubernetes auth ve
+# rotasyon. O üçü dev modunda birebir aynı çalışır.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: shardlands
+---
+# Vault'un TokenReview yetkisi: uygulamanın sunduğu ServiceAccount
+# token'ının gerçekliğini kube-apiserver'a SORABİLMESİ için.
+#
+# Sır sıfırı zincirinin kilit halkası burası: Vault kimseye güvenmiyor,
+# apiserver'a soruyor; apiserver da token'ı kendi imzaladığı için
+# kesin cevap verebiliyor.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-tokenreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: shardlands
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: shardlands
+spec:
+  selector:
+    app: vault
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault
+  namespace: shardlands
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault
+  template:
+    metadata:
+      labels:
+        app: vault
+      annotations:
+        # Vault'un kendisi mesh'e giriyor: uygulamanın Vault'a giden
+        # trafiği de mTLS'li olsun. Sırların taşındığı bağlantı,
+        # korunması en gerekli bağlantıdır.
+        linkerd.io/inject: enabled
+    spec:
+      serviceAccountName: vault
+      securityContext:
+        # Vault imajının giriş betiği root ile başlayıp su-exec ile
+        # `vault` kullanıcısına DÜŞER. Ayrıcalık düşürmek SETGID/SETUID
+        # ister; drop ALL ile bu da başarısız olur:
+        #   "su-exec: setgroups: Operation not permitted"
+        #
+        # Çözüm yetkiyi geri vermek değil, ZATEN o kullanıcı olarak
+        # başlamak: root değilsek betik düşürme dalına hiç girmiyor.
+        # (vault imajında uid 100 / gid 1000 = vault:vault)
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+      containers:
+        - name: vault
+          image: hashicorp/vault:1.18
+          args: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+          env:
+            - name: VAULT_DEV_ROOT_TOKEN_ID
+              value: "root" # yalnız dev modu
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+            # Vault imajının giriş betiği açılışta setcap ile IPC_LOCK
+            # almaya çalışır; capabilities: drop ALL ile bu başarısız
+            # olur ve konteyner CrashLoopBackOff'a girer:
+            #   "unable to set CAP_SETFCAP effective capability"
+            #
+            # İki seçenek vardı: SETFCAP'i geri vermek ya da atlamak.
+            # Atlamayı seçtik ve BEDELİ ŞUDUR: mlock olmadan Vault'un
+            # belleği takas alanına (swap) yazılabilir, yani sırlar
+            # diske düşebilir. Üretimde doğru cevap IPC_LOCK vermektir;
+            # dev modunda depolama zaten bellekte ve düğüm tek kullanımlık.
+            - name: SKIP_SETCAP
+              value: "true"
+            - name: VAULT_DISABLE_MLOCK
+              value: "true"
+          ports:
+            - containerPort: 8200
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true
+              port: 8200
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            # IPC_LOCK: Vault üretimde belleğini takasa (swap) yazılmaya
+            # karşı kilitler — sır diske düşmesin diye. Dev modunda
+            # gerekmiyor ve en dar profili korumak için verilmiyor.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

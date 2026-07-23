@@ -89,6 +89,12 @@ spec:
           ports:
             - containerPort: 9101
               name: grpc
+          # Vault ayarları hub ile AYNI ConfigMap'ten: token'ı basan ile
+          # doğrulayan aynı anahtarı görmek zorunda. Ayrı yerlerden
+          # beslenselerdi rotasyon sırasında ayrışabilirlerdi.
+          envFrom:
+            - configMapRef:
+                name: shardlands-config
           env:
             - name: SHARDLANDS_SECRET
               valueFrom:
