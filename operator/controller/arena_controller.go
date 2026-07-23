@@ -223,6 +223,13 @@ func (r *ArenaReconciler) desiredPod(a *arenav1.Arena, name string) *corev1.Pod 
 			Annotations: map[string]string{
 				"linkerd.io/inject": "enabled",
 				"config.alpha.linkerd.io/proxy-enable-native-sidecar": "true",
+				// Prometheus keşfi: arena Pod'ları da çekilsin. Kısa
+				// ömürlü oldukları için tam örnekleme garanti değil
+				// (docs/observability.md §5) — yine de tick süresi ve
+				// Go çalışma zamanı sinyalleri buradan gelir.
+				"prometheus.io/scrape": "true",
+				"prometheus.io/port":   "7778",
+				"prometheus.io/path":   "/metrics",
 			},
 		},
 		Spec: corev1.PodSpec{

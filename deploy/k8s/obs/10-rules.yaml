@@ -1,0 +1,252 @@
+# SLO tanımları ve alarm kuralları.
+#
+# Kurallar İKİYE ayrılır ve ayrım önemlidir:
+#   - RECORDING rules: pahalı sorguları önceden hesaplar. Alarm ve pano
+#     bunları okur; her değerlendirmede ham histogramı taramaz.
+#   - ALERTING rules: eşiği aşınca uyarır.
+#
+# Bütün kurallar rate()/increase() üstünden. Ham sayaç değerine alarm
+# kurulmaz: Faz 7'de canlı öğrendik — hub Pod'u yeniden başlayınca
+# sayaçlar sıfırlandı ve ham değere bakan her kural yanılırdı.
+# rate() sıfırlanmayı tanır ve doğru hesaplar.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: shardlands
+data:
+  slo.yml: |
+    groups:
+      # ---------------------------------------------------------------
+      # SLI HESAPLARI
+      # ---------------------------------------------------------------
+      - name: shardlands-sli
+        interval: 30s
+        rules:
+          # Giriş yolu hata oranı.
+          #
+          # PAYDA KARARI, SLO'nun en tartışmalı ve en önemli kısmı:
+          #   ok           -> başarı
+          #   client_error -> KAPSAM DIŞI. Kullanıcı geçersiz istek
+          #                   gönderdi; servis doğru davrandı. Bunu
+          #                   hataya saymak, kötü istemcilerin bizim
+          #                   SLO'muzu bozmasına izin vermek olurdu.
+          #   rate_limited -> KAPSAM DIŞI. Kötüye kullanıma karşı
+          #                   koruma, tasarlandığı gibi çalışıyor.
+          #   shed         -> HATA. Devre kesici/bulkhead doldu; meşru
+          #                   bir istek karşılanamadı. Kullanıcı
+          #                   açısından bu kesintidir.
+          #   error        -> HATA.
+          #
+          # Yani: "koruma mekanizmalarının kasten reddettiği" ile
+          # "kapasitemiz yetmediği için reddettiğimiz" AYRI şeyler.
+          - record: shardlands:login_error_ratio:rate5m
+            expr: |
+              (
+                sum(rate(shardlands_login_total{result=~"error|shed"}[5m]))
+                /
+                sum(rate(shardlands_login_total{result=~"ok|error|shed"}[5m]))
+              ) or vector(0)
+
+          - record: shardlands:login_error_ratio:rate30m
+            expr: |
+              (
+                sum(rate(shardlands_login_total{result=~"error|shed"}[30m]))
+                /
+                sum(rate(shardlands_login_total{result=~"ok|error|shed"}[30m]))
+              ) or vector(0)
+
+          - record: shardlands:login_error_ratio:rate1h
+            expr: |
+              (
+                sum(rate(shardlands_login_total{result=~"error|shed"}[1h]))
+                /
+                sum(rate(shardlands_login_total{result=~"ok|error|shed"}[1h]))
+              ) or vector(0)
+
+          - record: shardlands:login_error_ratio:rate6h
+            expr: |
+              (
+                sum(rate(shardlands_login_total{result=~"error|shed"}[6h]))
+                /
+                sum(rate(shardlands_login_total{result=~"ok|error|shed"}[6h]))
+              ) or vector(0)
+
+          # Gecikme yüzdelikleri. İSTEMCİ-GÖRÜNÜR yoldan seçildi:
+          # login_duration gateway'in uçtan uca ölçtüğü süredir ve
+          # player'a giden ağ + mesh atlamalarını İÇERİR. Faz 7'nin
+          # dersi buydu — sunucu-içi süre (475µs) kullanıcının
+          # beklediği süreyi (7.2ms) temsil etmiyor.
+          - record: shardlands:login_latency:p95
+            expr: histogram_quantile(0.95, sum(rate(shardlands_login_duration_seconds_bucket[5m])) by (le))
+          - record: shardlands:login_latency:p99
+            expr: histogram_quantile(0.99, sum(rate(shardlands_login_duration_seconds_bucket[5m])) by (le))
+
+          - record: shardlands:world_tick:p95
+            expr: histogram_quantile(0.95, sum(rate(shardlands_world_tick_duration_seconds_bucket[5m])) by (le))
+          - record: shardlands:arena_tick:p95
+            expr: histogram_quantile(0.95, sum(rate(shardlands_arena_tick_duration_seconds_bucket[5m])) by (le))
+
+      # ---------------------------------------------------------------
+      # ALARMLAR — çoklu pencere, çoklu yanma hızı
+      # ---------------------------------------------------------------
+      #
+      # SLO: giriş kullanılabilirliği %99.9 / 30 gün.
+      # Hata bütçesi: %0.1 → ayda ~43 dakika.
+      #
+      # YANMA HIZI (burn rate) = gerçekleşen hata oranı / bütçe oranı.
+      # 1x yanma, bütçeyi tam 30 günde bitirir. 14.4x yanma, bütçenin
+      # %2'sini 1 saatte yakar.
+      #
+      # NEDEN ÇOKLU PENCERE? Tek uzun pencere YAVAŞ tepki verir (sorun
+      # başlayalı yarım saat olmuştur); tek kısa pencere GÜRÜLTÜLÜDÜR
+      # (anlık bir sıçrama çağrı cihazını çaldırır). İkisini VE ile
+      # bağlamak ikisini de çözer: uzun pencere "gerçekten yanıyor mu",
+      # kısa pencere "hâlâ yanıyor mu" sorusunu cevaplar. Sorun kendini
+      # düzelttiyse kısa pencere hemen düşer ve alarm susar.
+      - name: shardlands-slo-alerts
+        rules:
+          # HIZLI YANMA → çağrı cihazı. Bütçenin %2'si 1 saatte.
+          - alert: LoginErrorBudgetBurningFast
+            expr: |
+              shardlands:login_error_ratio:rate1h > (14.4 * 0.001)
+              and
+              shardlands:login_error_ratio:rate5m > (14.4 * 0.001)
+            for: 2m
+            labels:
+              severity: page
+              slo: login-availability
+            annotations:
+              summary: "Giriş hata bütçesi hızlı yanıyor (14.4x)"
+              description: >-
+                Son 1 saatte hata oranı %{{ $value | humanizePercentage }}.
+                Bu hızda aylık bütçenin %2'si bir saatte tükenir.
+                Bakılacak: shardlands_login_total{result="shed"} artıyor
+                mu (kapasite) yoksa result="error" mu (bağımlılık)?
+
+          # ORTA YANMA → çağrı cihazı. Bütçenin %5'i 6 saatte.
+          - alert: LoginErrorBudgetBurning
+            expr: |
+              shardlands:login_error_ratio:rate6h > (6 * 0.001)
+              and
+              shardlands:login_error_ratio:rate30m > (6 * 0.001)
+            for: 15m
+            labels:
+              severity: page
+              slo: login-availability
+            annotations:
+              summary: "Giriş hata bütçesi yanıyor (6x)"
+
+          # YAVAŞ YANMA → bilet, çağrı cihazı DEĞİL. Sorun var ama
+          # gece 3'te uyandırmayı hak etmiyor.
+          - alert: LoginErrorBudgetSlowBurn
+            expr: |
+              shardlands:login_error_ratio:rate6h > (1 * 0.001)
+              and
+              shardlands:login_error_ratio:rate30m > (1 * 0.001)
+            for: 1h
+            labels:
+              severity: ticket
+              slo: login-availability
+
+          # GECİKME SLO'su: p95 < 20ms, p99 < 50ms.
+          # Ölçülen taban 7.2ms; eşikler ~3x marj bırakıyor ki GC
+          # duraklaması ve yeniden başlatma yutulsun, ama gerçek bir
+          # yavaşlama gizlenmesin.
+          - alert: LoginLatencyHigh
+            expr: shardlands:login_latency:p95 > 0.020
+            for: 10m
+            labels:
+              severity: page
+              slo: login-latency
+            annotations:
+              summary: "Giriş p95 gecikmesi 20ms üstünde"
+              description: >-
+                p95={{ $value | humanizeDuration }}. Sunucu-içi gRPC
+                süresiyle (shardlands_grpc_server_duration_seconds)
+                karşılaştır: fark büyükse sorun ağda/mesh'te,
+                küçükse player servisinde.
+
+          - alert: LoginLatencyVeryHigh
+            expr: shardlands:login_latency:p99 > 0.050
+            for: 10m
+            labels:
+              severity: page
+              slo: login-latency
+
+          # TICK BÜTÇESİ. Eşik bütçenin kendisi DEĞİL, %20'si:
+          # bütçeye değdiği anda alarm vermek "iş zaten bitti" demektir.
+          # Hub 20Hz → 50ms bütçe → eşik 10ms.
+          - alert: WorldTickSlow
+            expr: shardlands:world_tick:p95 > 0.010
+            for: 5m
+            labels:
+              severity: page
+              slo: world-tick
+            annotations:
+              summary: "Dünya tick'i bütçesinin %20'sini aştı"
+              description: >-
+                p95={{ $value | humanizeDuration }} (bütçe 50ms).
+                Dünya yavaşlıyor; oyuncular donuklaşmayı hissetmeden
+                önce bakılmalı. Önce Go GC ve goroutine metrikleri.
+
+          # Arena 30Hz → 33ms bütçe → eşik 6.6ms.
+          # NOT: arena Pod'ları kısa ömürlü, örnekleme eksik olabilir
+          # (docs/observability.md §5). Bu yüzden `for` süresi kısa.
+          - alert: ArenaTickSlow
+            expr: shardlands:arena_tick:p95 > 0.0066
+            for: 2m
+            labels:
+              severity: ticket
+              slo: arena-tick
+
+      # ---------------------------------------------------------------
+      # SİSTEM ALARMLARI (SLO değil, doğrudan arıza sinyalleri)
+      # ---------------------------------------------------------------
+      - name: shardlands-system
+        rules:
+          # Hedef düşmüş. Çekme modelinin bedava kazancı: susan servisle
+          # hiç var olmamış servis ayırt edilir.
+          - alert: TargetDown
+            expr: up{job="shardlands-pods"} == 0
+            for: 5m
+            labels:
+              severity: page
+
+          # Vault tazeleme başarısız. Faz 6'da "hata ölümcül değil"
+          # dedik; bedeli SESSİZLİKTİ. Bu alarm o sessizliği kırar:
+          # servis çalışmaya devam ediyor ama anahtar rotasyonu ARTIK
+          # ÇALIŞMIYOR — ihlal durumunda anahtar döndürülemez.
+          - alert: KeyRefreshFailing
+            expr: increase(shardlands_key_refresh_total{result="error"}[15m]) > 3
+            for: 5m
+            labels:
+              severity: ticket
+            annotations:
+              summary: "Vault anahtar tazeleme başarısız"
+              description: >-
+                Servis eski anahtarla çalışmaya devam ediyor (bilinçli
+                tasarım) ama ROTASYON YAPILAMAZ durumda.
+
+          # Doygunluk: mesaj düşmeye başladı. Hata değil, baskı sinyali.
+          - alert: MailboxSaturated
+            expr: rate(shardlands_dead_letters_total[5m]) > 1
+            for: 10m
+            labels:
+              severity: ticket
+            annotations:
+              summary: "Aktör mailbox'ları doluyor (dead letter akıyor)"
+              description: >-
+                DropNewest tasarım gereği çalışıyor ama sistem baskı
+                altında. Oyuncular kare atlamaya başlamadan bakılmalı.
+
+          # Saga telafileri artıyor: arena sağlama yolu bozuluyor
+          # olabilir (operator, imaj çekme, düğüm kapasitesi).
+          - alert: MatchCancellationsHigh
+            expr: |
+              sum(rate(shardlands_match_total{result="cancelled"}[15m]))
+              /
+              sum(rate(shardlands_match_total[15m])) > 0.1
+            for: 10m
+            labels:
+              severity: ticket

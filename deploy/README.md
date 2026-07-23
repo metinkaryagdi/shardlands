@@ -307,7 +307,7 @@ sınırlayıcının doldurma hızına (1/sn) eşit. **Ölçüm aracının ne
 ## Gözlemlenebilirlik (Faz 7, devam ediyor)
 
 ```bash
-kubectl apply -f deploy/k8s/obs/
+kubectl apply -f deploy/k8s/obs/   # Prometheus + SLO/alarm kuralları
 kubectl apply -f deploy/k8s/mesh/15-policy-metrics.yaml
 kubectl -n shardlands port-forward svc/prometheus 9090:9090
 ```

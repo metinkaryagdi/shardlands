@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"shardlands/pkg/metrics"
 	"shardlands/pkg/ringbuf"
 )
 
@@ -289,7 +290,12 @@ func (a *Arena) Run() {
 			case <-a.stop:
 				return
 			case <-t.C:
-				if a.Tick() {
+				// Ölçüm DÖNGÜDE, Tick()'in içinde değil: benchmark'ı
+				// (39.8 ns) kirletmemek için — bkz. pkg/metrics.
+				basla := time.Now()
+				bitti := a.Tick()
+				metrics.ArenaTickDuration.Observe(time.Since(basla).Seconds())
+				if bitti {
 					return // maç bitti
 				}
 			}

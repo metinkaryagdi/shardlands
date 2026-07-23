@@ -362,6 +362,73 @@ graph TD
   `AuthorizationPolicy` silmek, gerçek ve tek komutla geri alınabilir
   bir ağ bölünmesi üretiyor.
 
+## Faz 7 — Gözlemlenebilirlik ✅
+
+Üç sinyal, tek zincir: **grafikten isteğe, istekten sebebe.**
+
+| Parça | Notlar |
+|---|---|
+| Metrikler | [pkg/metrics](pkg/metrics/metrics.go) — RED/USE, kardinalite disiplini, histogram |
+| Zero trust altında toplama | [15-policy-metrics.yaml](deploy/k8s/mesh/15-policy-metrics.yaml) — metrikler yalnız Prometheus kimliğine |
+| Dağıtık izleme | [pkg/trace](pkg/trace/trace.go) — W3C Trace Context, sıfırdan |
+| Log korelasyonu | [pkg/logging](pkg/logging/logging.go) — slog + otomatik `trace_id` |
+| SLO + alarm | [10-rules.yaml](deploy/k8s/obs/10-rules.yaml) — çoklu pencere/çoklu yanma hızı |
+| Anlatı | [docs/observability.md](docs/observability.md) |
+
+```mermaid
+graph LR
+    subgraph "hub Pod'u"
+      GW[gateway] -->|/metrics| P[(Prometheus)]
+      GW -.->|"trace_id'li JSON log"| L[stderr]
+    end
+    subgraph "player Pod'u"
+      PL[player] -->|/metrics :9102| P
+      PL -.->|"aynı trace_id"| L
+    end
+    GW -->|"traceparent<br/>(W3C)"| PL
+    PX["linkerd-proxy :4191<br/>(uygulamadan bağımsız)"] --> P
+    P --> R["SLO kuralları<br/>yanma hızı alarmları"]
+```
+
+### Ölçülen değerler (kümede)
+
+```
+giriş p95 / p99                8.0 ms / 9.6 ms      (SLO: 20 / 50 ms)
+hub tick p95                   47.5 µs              (bütçe 50 ms → %0.1)
+gRPC sunucu p95                475 µs
+gRPC istemci p95              7750 µs               ← aradaki fark ağ + mesh
+tek trace: istemci span       8.958 ms / sunucu span 0.031 ms
+```
+
+### Faz 7 kapanış — dersler
+
+- **Kullanıcının ölçüldüğü yer ≠ ölçmenin kolay olduğu yer.** Sunucu-içi
+  475 µs "her şey yolunda" der; kullanıcının beklediği süre onun **16
+  katı**. SLI, ölçmesi kolay olandan değil kullanıcının olduğu yerden
+  seçilir. Metrikle *çıkarsanan* bu fark, sonra tek bir trace'te
+  (8.958 ms ↔ 0.031 ms) **ölçüldü**.
+- **Üç sinyal ayrı ayrı yarım işe yarar.** Onları bağlayan tek alan
+  `trace_id`. Log satırında o alan yoksa grafikten sebebe giden yol
+  kopar ve "yavaşlık" saatlerce açıklanamaz kalır.
+- **Payda kararı SLO'nun en tartışmalı kısmıdır.** "Koruma
+  mekanizmalarının kasten reddettiği" (`rate_limited`) ile "kapasitemiz
+  yetmediği için reddettiğimiz" (`shed`) aynı şey değildir; ilki SLO
+  dışı, ikincisi hatadır.
+- **Ham sayaca alarm kurulmaz.** Pod yeniden başlayınca sayaçlar
+  sıfırlandı ve gönderilen istekler "kaybolmuş" göründü — `rate()`
+  sıfırlanmayı tanır, ham değer yanılır. Ders canlı bir tuzaktan çıktı.
+- **Alarm, ateşlendiği görülmeden yazılmış sayılmaz.** Hata bütçesi
+  bilerek yakıldı (%37.7), alarm FIRING oldu, arıza giderilince
+  **kendiliğinden sustu**. Çoklu pencerenin vaadi buydu.
+- **Gözlem katmanı, gözlediği şeyi değiştirmemeli.** Arena tick ölçümü
+  `Tick()`'in içine değil `Run()` döngüsüne kondu: histogram çağrısı
+  (~30 ns), Faz 5'te ölçülen 39.8 ns'lik tick maliyetini ikiye
+  katlayıp benchmark'ı kirletirdi.
+- **Ölçemediğini "ölçülüyor" gibi gösterme.** Arena Pod'ları 90 saniye
+  yaşıyor, Prometheus 15 saniyede bir çekiyor — eksik örnekleme
+  kaçınılmaz. Pushgateway kurulmadı; sınır ve gerekçesi
+  docs/observability.md §5'te karar kaydı olarak duruyor.
+
 ## Çalıştırma
 
 ```powershell

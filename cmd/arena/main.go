@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/grpc"
 
 	pb "shardlands/gen/shardlands/v1"
+	"shardlands/pkg/metrics"
 	"shardlands/services/arena"
 )
 
@@ -40,6 +42,27 @@ func main() {
 	a := arena.New(id, mode, specs, arena.Options{
 		OnEnd: func(r arena.Result) { done <- r },
 	})
+
+	// Yönetim ucu: /metrics ve /healthz.
+	//
+	// DİKKAT — KISA ÖMÜRLÜ İŞ YÜKÜ + ÇEKME MODELİ UYUMSUZ. Bu Pod tipik
+	// olarak 90 saniye yaşıyor; Prometheus 15sn'de bir çektiği için en
+	// iyi ihtimalle ~6 örnek alınabiliyor ve Pod son çekimden sonra
+	// ölürse SON VERİLER TAMAMEN KAYBOLUYOR. Standart çözümler
+	// Pushgateway ya da uzak yazmadır; burada kasten yapılmadı ve
+	// SLO tarafında sonucu ölçülüp yazıldı (docs/observability.md §5).
+	adminMux := http.NewServeMux()
+	adminMux.Handle("GET /metrics", metrics.Handler())
+	adminMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("ok"))
+	})
+	adminSrv := &http.Server{Addr: envOr("ARENA_ADMIN", ":7778"), Handler: adminMux}
+	go func() {
+		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("arena: admin: %v", err)
+		}
+	}()
+	defer adminSrv.Close()
 
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {

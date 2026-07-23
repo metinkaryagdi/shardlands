@@ -101,6 +101,21 @@ var (
 		Buckets: []float64{.00005, .0001, .00025, .0005, .001, .005, .01, .025, .05},
 	})
 
+	// ArenaTickDuration, bir arena tick'inin süresi (30Hz → 33ms bütçe).
+	//
+	// ÖLÇÜM YERİ BİLİNÇLİ: bu gözlem Run() döngüsünde yapılıyor,
+	// Tick()'in İÇİNDE değil. Sebep, Faz 5'te ölçtüğümüz 39.8 ns'lik
+	// tick maliyeti: histogram Observe çağrısı ~30ns ve fonksiyonun
+	// içine konsaydı BENCHMARK'I İKİYE KATLARDI. Üretimde saniyede 30
+	// tick var, yani 900 ns/sn — tamamen ihmal edilebilir; ama benchmark
+	// sayılarını kirletmek, gözlem katmanının ölçtüğü şeyi değiştirmesi
+	// olurdu. Gözlemci etkisini bilerek döngü seviyesine ittik.
+	ArenaTickDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "shardlands_arena_tick_duration_seconds",
+		Help:    "Bir arena tick'inin süresi (bütçe: 33ms @ 30Hz).",
+		Buckets: []float64{.00002, .00005, .0001, .00025, .0005, .001, .0033, .0066, .0165, .033},
+	})
+
 	// ---- Maç saga'sı ----
 
 	// MatchTotal, saga sonuçları. Telafi yollarının gerçekten
@@ -166,7 +181,7 @@ func init() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 
 		LoginTotal, LoginDuration, Sessions, CommandsShed,
-		WorldTickDuration, MatchTotal, KeyRefreshTotal, DeadLetters,
+		WorldTickDuration, ArenaTickDuration, MatchTotal, KeyRefreshTotal, DeadLetters,
 	)
 }
 
