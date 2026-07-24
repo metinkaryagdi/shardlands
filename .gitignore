@@ -6,7 +6,13 @@
 *.test
 *.out
 /bin/
-/dist/
+# /dist/ içeriği ignore, TEK istisna dağıtım zip'i. Dizinin kendisini
+# değil İÇERİĞİNİ ignore etmek şart (/dist/ yazarsak git dizini hiç
+# taramaz ve aşağıdaki istisna çalışmaz — yaşanmış).
+/dist/*
+# Windows dağıtım paketi (sunucu + istemci, tek zip) commit'li:
+# GitHub'dan indirip iki bilgisayarda denemek için (README §Çalıştırma).
+!/dist/shardlands-windows.zip
 
 # Coverage
 *.coverprofile

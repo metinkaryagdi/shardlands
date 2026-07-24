@@ -532,6 +532,17 @@ tek trace: istemci span       8.958 ms / sunucu span 0.031 ms
 
 ## Çalıştırma
 
+### En hızlı: hazır Windows paketi (kurulum yok)
+
+Go/Docker gerektirmeden denemek için: **[dist/shardlands-windows.zip](dist/shardlands-windows.zip)**
+indir, çıkar, `BASLAT.bat`'e çift tıkla. İçinde sunucu + istemci hazır;
+`http://localhost:8080` (aynı makine) ya da paketteki `OKU.txt`'nin
+anlattığı gibi iki bilgisayarla aynı yerel ağda oynanır. **Hub** (paylaşımlı
+dünya: hareket, kaynak, sohbet, takas) ve **arena** (1v1 dövüş: nişan al,
+ateş et, can barları) tarayıcıdan tam oynanabilir.
+
+### Kaynaktan
+
 Gereken: Go 1.26+. Kümede çalıştırmak için ayrıca Docker + kind + kubectl.
 
 ```powershell

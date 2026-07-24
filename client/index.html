@@ -13,11 +13,15 @@
   input, button { font-size: 16px; padding: 8px 12px; border-radius: 6px;
                   border: 1px solid #30363d; background: #161b22; color: inherit; }
   button { cursor: pointer; background: #1f6feb; border-color: #1f6feb; color: white; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #arenaBtn { background: #a371f7; border-color: #a371f7; }
   canvas { border: 1px solid #30363d; border-radius: 8px; background: #10151c; }
+  canvas.arena { border-color: #a371f7; background: #16101c; cursor: crosshair; }
   #hud { font-size: 13px; color: #8b949e; min-height: 1em; }
+  #bar { display: flex; gap: 8px; align-items: center; }
   #trade { display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
            font-size: 13px; width: 780px; }
-  #trade[hidden] { display: none; } /* hidden, inline display'i ezmesin */
+  #trade[hidden], #bar[hidden] { display: none; } /* hidden inline display'i ezmesin */
   #trade select, #trade input, #trade button { padding: 4px 6px; }
 </style>
 </head>
@@ -30,6 +34,10 @@
 <div id="login">
   <input id="name" placeholder="isim" maxlength="24" autofocus>
   <button id="go">Hub'a Katıl</button>
+</div>
+<div id="bar" hidden>
+  <button id="arenaBtn">⚔ Arena'ya Gir (1v1)</button>
+  <span id="arenaMsg" style="font-size:13px; color:#8b949e;"></span>
 </div>
 <canvas id="c" width="800" height="600" hidden></canvas>
 <input id="chat" placeholder="mesaj yaz — Enter ile gönder" maxlength="120" hidden
@@ -52,9 +60,21 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const canvas = $("c"), ctx = canvas.getContext("2d");
+const KIND_TR = { wood: "odun", crystal: "kristal" };
+
+// mode: "hub" | "queue" | "arena". Sunucu otoriter; bu yalnız
+// hangi ekranı çizeceğimizi ve komutları nasıl yorumlayacağımızı belirler.
+let mode = "hub";
+let ws = null;
+
+// hub durumu
 let me = null, players = [], nodes = [], tick = 0, inventory = {};
 let region = "", shard = "", cols = 2, rows = 2;
-const KIND_TR = { wood: "odun", crystal: "kristal" };
+
+// arena durumu
+let arena = null;      // son arena karesi
+let myTeam = 0;        // hangi takımdayım (arena-enter'dan)
+let mouse = { x: 300, y: 200 }; // nişan için imleç (arena koordinatı)
 
 async function join() {
   const name = $("name").value.trim();
@@ -66,36 +86,28 @@ async function join() {
   });
   if (!res.ok) { $("hud").textContent = "giriş hatası: " + await res.text(); return; }
   const { playerId, token } = await res.json();
+  window.__token = token;
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const wsURL = `${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`;
 
-  // KESİNTİSİZ DAĞITIMIN SON METRESİ İSTEMCİDEDİR.
-  //
-  // Hub tek kopya olduğu için yeniden dağıtımı kısa bir kesinti üretir
-  // (bkz. docs/zero-downtime.md §4). Sunucu tarafında yapılabilecek her
-  // şey yapıldıktan sonra geriye kalan tek çare, istemcinin kopan
-  // bağlantıyı kendisi toparlamasıdır. Token 24 saat geçerli; yeniden
-  // bağlanmak için tekrar giriş yapmak gerekmez.
-  //
-  // Üstel geri çekilme + JİTTER: kesintiden çıkan sunucuya bütün
-  // istemciler aynı anda yüklenirse (thundering herd) sunucu tekrar
-  // düşer. Rastgele dağıtmak bunu engeller — Faz 4'teki yeniden deneme
-  // tartışmasının istemci tarafındaki karşılığı.
-  let ws, firstOpen = true, retry = 0, invTimer = null;
+  // KESİNTİSİZ DAĞITIMIN SON METRESİ İSTEMCİDEDİR (docs/zero-downtime.md §4):
+  // hub tek kopya olduğu için yeniden dağıtım kısa bir kesinti üretir;
+  // istemci kopan bağlantıyı üstel geri çekilme + JİTTER ile toparlar.
+  let firstOpen = true, retry = 0, invTimer = null;
 
   function connect() {
     ws = new WebSocket(wsURL);
 
     ws.onopen = () => {
       retry = 0;
-      $("hud").textContent = "bağlandı — WASD/oklar · E: topla · sohbet kutusu · takas paneli";
+      setHudDefault();
       if (!firstOpen) return;
       firstOpen = false;
-      // Tek seferlik kurulum: yeniden bağlanmada TEKRARLANMAMALI,
-      // yoksa her kopuşta bir zamanlayıcı daha birikir.
+      // Tek seferlik kurulum: yeniden bağlanmada TEKRARLANMAMALI.
       $("login").hidden = true;
       canvas.hidden = false;
+      $("bar").hidden = false;
       $("chat").hidden = false;
       $("trade").hidden = false;
       $("globals").hidden = false;
@@ -114,21 +126,70 @@ async function join() {
 
     ws.onmessage = ev => {
       const m = JSON.parse(ev.data);
-      if (m.type === "welcome") {
-        me = m.id; cols = m.cols || 2; rows = m.rows || 2;
-        refreshInventory();
-        if (!invTimer) invTimer = setInterval(refreshInventory, 3000);
-      }
-      else if (m.type === "snapshot") {
-        tick = m.tick; players = m.players; nodes = m.nodes || [];
-        region = m.region || ""; shard = m.shard || ""; draw();
+      switch (m.type) {
+        case "welcome":
+          me = m.id; cols = m.cols || 2; rows = m.rows || 2;
+          refreshInventory();
+          if (!invTimer) invTimer = setInterval(refreshInventory, 3000);
+          break;
+
+        case "snapshot": // hub karesi
+          tick = m.tick; players = m.players; nodes = m.nodes || [];
+          region = m.region || ""; shard = m.shard || "";
+          if (mode !== "arena") draw();
+          break;
+
+        case "queued":
+          $("arenaMsg").textContent = `kuyruktasın (${m.mode}) — rakip bekleniyor…`;
+          $("arenaBtn").disabled = true;
+          break;
+
+        case "queue-error":
+          $("arenaMsg").textContent = "kuyruk hatası: " + m.error;
+          $("arenaBtn").disabled = false;
+          break;
+
+        case "arena-enter": // hub'dan arenaya geçiş
+          mode = "arena";
+          myTeam = m.team;
+          arena = null;
+          canvas.width = m.w; canvas.height = m.h;
+          canvas.classList.add("arena");
+          // arena modunda hub panelleri anlamsız
+          $("chat").hidden = true; $("trade").hidden = true;
+          $("arenaBtn").disabled = true;
+          $("arenaMsg").textContent = `ARENA · takım ${m.team === 0 ? "MAVİ" : "KIRMIZI"} · fare ile nişan al, TIKLA = ateş`;
+          break;
+
+        case "arena": // arena karesi
+          arena = m;
+          drawArena();
+          break;
+
+        case "hub-enter": // arenadan hub'a dönüş
+          mode = "hub";
+          arena = null;
+          canvas.width = 800; canvas.height = 600;
+          canvas.classList.remove("arena");
+          $("chat").hidden = false; $("trade").hidden = false;
+          $("arenaBtn").disabled = false;
+          $("arenaMsg").textContent = "arenadan döndün — tekrar girebilirsin";
+          region = m.region || region; shard = m.shard || shard;
+          break;
       }
     };
   }
   connect();
 
-  // Takas: kimlik doğrulanmış oyuncu (bu token) teklif verir; sunucudaki
-  // saga orkestratörü rezerve → (auto-accept) → çapraz transfer yapar.
+  // ---- Arena kuyruğu ----
+  $("arenaBtn").onclick = () => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "queue", mode: "1v1" }));
+      $("arenaMsg").textContent = "kuyruğa giriliyor…";
+    }
+  };
+
+  // ---- Takas (hub) ----
   $("offer").onclick = async () => {
     const partner = $("partner").value;
     if (!partner) { $("tradeMsg").textContent = "yakında oyuncu yok"; return; }
@@ -148,8 +209,9 @@ async function join() {
     } catch (e) { $("tradeMsg").textContent = "hata"; }
   };
 
-  // Girdi: basılı tuş DURUMU gönderilir (pozisyon değil — sunucu
-  // otoriter). Yalnızca durum değişince mesaj çıkar.
+  // ---- Girdi: basılı tuş DURUMU gönderilir (pozisyon değil — sunucu
+  // otoriter). Aynı "input" mesajı hem hub hem arenada geçerli; sunucu
+  // moda göre yönlendirir. ----
   const keys = { up: false, down: false, left: false, right: false };
   const map = { KeyW: "up", ArrowUp: "up", KeyS: "down", ArrowDown: "down",
                 KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right" };
@@ -162,11 +224,30 @@ async function join() {
   const typing = () => document.activeElement === $("chat");
   addEventListener("keydown", e => { if (!typing() && map[e.code]) { e.preventDefault(); setKey(e.code, true); } });
   addEventListener("keyup",   e => { if (!typing() && map[e.code]) { e.preventDefault(); setKey(e.code, false); } });
+
+  // E: yalnız hub modunda kaynak topla.
   addEventListener("keydown", e => {
-    if (!typing() && e.code === "KeyE" && ws.readyState === WebSocket.OPEN) {
+    if (!typing() && e.code === "KeyE" && mode === "hub" && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "gather" }));
       setTimeout(refreshInventory, 300);
     }
+  });
+
+  // Nişan + ateş: yalnız arena modunda. İmleç konumunu izle, tıklamada
+  // "fire" gönder. aimX/aimY = imleç - kendi konumum (yön vektörü;
+  // sunucu normalize eder, büyüklük önemsiz).
+  canvas.addEventListener("mousemove", e => {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
+    mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
+  });
+  canvas.addEventListener("mousedown", () => {
+    if (mode !== "arena" || !arena || ws.readyState !== WebSocket.OPEN) return;
+    const self = arena.players.find(p => p.id === me);
+    if (!self || !self.alive) return;
+    const dx = mouse.x - self.x, dy = mouse.y - self.y;
+    if (dx === 0 && dy === 0) return;
+    ws.send(JSON.stringify({ type: "fire", aimX: dx, aimY: dy }));
   });
 
   $("chat").addEventListener("keydown", e => {
@@ -178,10 +259,18 @@ async function join() {
       setTimeout(refreshChatLog, 300);
     }
   });
+  // Pencere odağı gidince tuşları bırak (takılı kalmasın).
   addEventListener("blur", () => { for (const k in keys) keys[k] = false;
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", ...keys })); });
 }
 
+function setHudDefault() {
+  $("hud").textContent = mode === "arena"
+    ? "ARENA — WASD/oklar: hareket · fare: nişan · tıkla: ateş"
+    : "bağlandı — WASD/oklar: hareket · E: topla · sohbet · takas · ⚔ Arena";
+}
+
+// ======================= HUB ÇİZİMİ =======================
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   // zemin ızgarası
@@ -193,7 +282,7 @@ function draw() {
   for (let y = 0; y <= canvas.height; y += 50) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
   }
-  // Bölge sınırları (grid hücreleri): kalın çizgiler.
+  // Bölge sınırları (grid hücreleri).
   ctx.strokeStyle = "rgba(31,111,235,0.35)";
   ctx.lineWidth = 2;
   for (let c = 1; c < cols; c++) {
@@ -222,7 +311,7 @@ function draw() {
     if (p.bubble) drawBubble(p);
   }
   const loc = region ? ` · bölge ${region} @ ${shard}` : "";
-  $("hud").textContent = `tick ${tick}${loc} · bu bölgede ${players.length} oyuncu${invText()}`;
+  $("hud").textContent = `HUB · tick ${tick}${loc} · bu bölgede ${players.length} oyuncu${invText()}`;
   refreshPartners();
 }
 
@@ -230,13 +319,13 @@ function drawNode(n) {
   ctx.save();
   ctx.globalAlpha = n.available ? 1 : 0.25;
   if (n.kind === "crystal") {
-    ctx.beginPath(); // elmas
+    ctx.beginPath();
     ctx.moveTo(n.x, n.y - 12); ctx.lineTo(n.x + 10, n.y);
     ctx.lineTo(n.x, n.y + 12); ctx.lineTo(n.x - 10, n.y);
     ctx.closePath();
     ctx.fillStyle = "#39c5cf";
   } else {
-    ctx.beginPath(); // kütük
+    ctx.beginPath();
     ctx.roundRect(n.x - 11, n.y - 9, 22, 18, 4);
     ctx.fillStyle = "#ad7c4e";
   }
@@ -245,7 +334,6 @@ function drawNode(n) {
   ctx.stroke();
   ctx.restore();
 
-  // Yakındaysak ipucu göster (yalnızca görsel; otorite sunucuda).
   const self = players.find(p => p.id === me);
   if (n.available && self && Math.hypot(n.x - self.x, n.y - self.y) <= 48) {
     ctx.fillStyle = "#e6edf3";
@@ -255,6 +343,97 @@ function drawNode(n) {
   }
 }
 
+// ======================= ARENA ÇİZİMİ =======================
+const TEAM_COLOR = ["#58a6ff", "#f85149"]; // 0 mavi, 1 kırmızı
+
+function drawArena() {
+  if (!arena) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // zemin
+  ctx.strokeStyle = "rgba(163,113,247,0.10)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= canvas.width; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+  }
+  for (let y = 0; y <= canvas.height; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+  }
+
+  // mermiler
+  for (const pr of (arena.projectiles || [])) {
+    ctx.beginPath();
+    ctx.arc(pr.x, pr.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = TEAM_COLOR[pr.team] || "#fff";
+    ctx.fill();
+  }
+
+  // nişan çizgisi (kendi konumumdan imlece)
+  const self = arena.players.find(p => p.id === me);
+  if (self && self.alive) {
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    ctx.setLineDash([4, 6]);
+    ctx.beginPath(); ctx.moveTo(self.x, self.y); ctx.lineTo(mouse.x, mouse.y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // oyuncular
+  for (const p of arena.players) {
+    const self = p.id === me;
+    ctx.globalAlpha = p.alive ? 1 : 0.3;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 14, 0, Math.PI * 2);
+    ctx.fillStyle = TEAM_COLOR[p.team] || "#8b949e";
+    ctx.fill();
+    ctx.lineWidth = self ? 3 : 1;
+    ctx.strokeStyle = self ? "#ffffff" : "rgba(255,255,255,0.4)";
+    ctx.stroke();
+    ctx.lineWidth = 1;
+
+    // can barı
+    const w = 30, h = 4, hx = p.x - w / 2, hy = p.y - 26;
+    ctx.fillStyle = "rgba(255,255,255,0.15)";
+    ctx.fillRect(hx, hy, w, h);
+    ctx.fillStyle = p.health > 30 ? "#3fb950" : "#f85149";
+    ctx.fillRect(hx, hy, w * Math.max(0, p.health) / 100, h);
+
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#e6edf3";
+    ctx.font = "12px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(p.name + (self ? " (sen)" : ""), p.x, p.y - 32);
+  }
+  ctx.globalAlpha = 1;
+
+  // üst bilgi: kalan süre
+  const sec = Math.max(0, Math.ceil((arena.remainingMs || 0) / 1000));
+  ctx.fillStyle = "#c9d1d9";
+  ctx.font = "bold 16px system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText(`⏱ ${sec}s`, canvas.width / 2, 24);
+
+  // maç bitti kaplaması
+  if (arena.over) {
+    ctx.fillStyle = "rgba(13,17,23,0.75)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 28px system-ui";
+    let txt;
+    if (arena.winnerTeam === -1) txt = "BERABERE";
+    else if (arena.winnerTeam === myTeam) txt = "🏆 KAZANDIN";
+    else txt = "ELENDİN";
+    ctx.fillText(txt, canvas.width / 2, canvas.height / 2);
+    ctx.font = "14px system-ui";
+    ctx.fillStyle = "#8b949e";
+    ctx.fillText("hub'a dönülüyor…", canvas.width / 2, canvas.height / 2 + 28);
+  }
+
+  const meP = arena.players.find(p => p.id === me);
+  $("hud").textContent = `ARENA · tick ${arena.tick} · canın: ${meP ? Math.max(0, meP.health) : 0}`
+    + ` · WASD hareket · fare nişan · tıkla ateş`;
+}
+
+// ======================= ORTAK / HTTP =======================
 async function refreshStats() {
   try {
     const s = await (await fetch("/api/stats")).json();
@@ -304,7 +483,7 @@ function refreshPartners() {
   const sel = $("partner");
   const others = players.filter(p => p.id !== me);
   const wanted = others.map(p => `${p.id} ${p.name}`).join("|");
-  if (sel.dataset.sig === wanted) return; // değişmediyse dokunma (seçim korunur)
+  if (sel.dataset.sig === wanted) return;
   sel.dataset.sig = wanted;
   const prev = sel.value;
   sel.innerHTML = others.map(p => `<option value="${p.id}">${escapeHTML(p.name)}</option>`).join("");
