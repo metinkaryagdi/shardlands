@@ -36,6 +36,21 @@ graph LR
     W --> RAFT[("Raft<br/>shard liderliği")]
 ```
 
+## Ekran görüntüleri
+
+Projenin ana tezi olan **iki zıt iş yükü** burada görünüyor: solda kalıcı,
+event-sourced, tutarlılık öncelikli hub dünyası; sağda talep üzerine açılan,
+lock-free, gecikme öncelikli arena.
+
+| Hub dünyası (20 Hz) | Arena instance'ı (30 Hz) |
+| --- | --- |
+| ![Hub dünyası: shard'lanmış bölgede iki oyuncu, kaynak node'ları, CRDT toplam sayacı ve takas paneli](docs/screenshots/hub.png) | ![Arena: 1v1 maç, geri sayım, takım ataması ve tick sayacı](docs/screenshots/arena.png) |
+
+Hub'ın alt bilgisindeki `HUB · tick 22767 · bölge r-1-1 @ shard-1` bölge→shard
+eşlemesinin canlı hâli; üstteki `toplam toplanan (CRDT)` sayacı ise bölünmede de
+çalışan AP tarafı. Arenada `ARENA · tick 394` — geçici, kalıcılığı olmayan,
+tamamen gecikme odaklı instance.
+
 ## Neden bakmaya değer?
 
 1. **Altyapının tamamı sıfırdan.** Aktör sistemi, lock-free MPSC ring
