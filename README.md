@@ -42,7 +42,7 @@ Projenin ana tezi olan **iki zıt iş yükü** burada görünüyor: solda kalıc
 event-sourced, tutarlılık öncelikli hub dünyası; sağda talep üzerine açılan,
 lock-free, gecikme öncelikli arena.
 
-| Hub dünyası (20 Hz) | Arena instance'ı (30 Hz) |
+| Hub dünyası | Arena instance'ı |
 | --- | --- |
 | ![Hub dünyası: shard'lanmış bölgede iki oyuncu, kaynak node'ları, CRDT toplam sayacı ve takas paneli](docs/screenshots/hub.png) | ![Arena: 1v1 maç, geri sayım, takım ataması ve tick sayacı](docs/screenshots/arena.png) |
 
